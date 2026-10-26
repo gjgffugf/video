@@ -1,0 +1,20 @@
+# Gradle
+.gradle/
+build/
+local.properties
+*.iml
+.idea/
+
+# Android
+app/app/build/
+app/build/
+captures/
+
+# 服务端数据（不入库）
+server/data/*.json
+server/data/*.lock
+server/videos/*
+
+# 密钥
+*.jks
+*.keystore
