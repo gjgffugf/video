@@ -55,6 +55,11 @@ class MainActivity : AppCompatActivity() {
             }
         })
 
+        // 点错误提示可重试
+        emptyView.setOnClickListener {
+            if (adapter.size == 0) loadMore()
+        }
+
         loadMore()
     }
 
@@ -68,33 +73,49 @@ class MainActivity : AppCompatActivity() {
         }
 
         lifecycleScope.launch(Dispatchers.IO) {
-            val list: List<VideoItem>? = try {
-                Api.feed(BuildConfig.API_BASE, PAGE_SIZE)
-            } catch (e: Exception) {
-                null
-            }
+            val result = Api.feed(BuildConfig.API_BASE, PAGE_SIZE)
 
             withContext(Dispatchers.Main) {
                 loading = false
                 loadingView.visibility = View.GONE
 
                 when {
-                    list == null -> {
-                        emptyView.text = "拉取失败\n检查服务端地址：\n${BuildConfig.API_BASE}"
-                        emptyView.visibility = View.VISIBLE
-                    }
-                    list.isEmpty() && adapter.size == 0 -> {
+                    !result.ok -> showError(result)
+                    result.items.isEmpty() && adapter.size == 0 -> {
                         emptyView.text =
-                            "服务端还没有视频\n先访问 sync.php?token=xxx 抓取一批"
+                            "服务端还没有视频\n\n先访问\napi.php?action=import&token=你的令牌\n导入一批，然后点此重试"
                         emptyView.visibility = View.VISIBLE
                     }
                     else -> {
-                        adapter.append(list)
+                        emptyView.visibility = View.GONE
+                        adapter.append(result.items)
                         adapter.setActive(pager.currentItem)
                     }
                 }
             }
         }
+    }
+
+    /** 把真实失败原因显示出来，方便排查 WAF 拦截 */
+    private fun showError(result: FeedResult) {
+        val sb = StringBuilder()
+        sb.append("拉取失败\n")
+        sb.append("原因：").append(result.error).append("\n\n")
+        sb.append("地址：").append(BuildConfig.API_BASE)
+
+        if (result.rawHead.isNotBlank()) {
+            sb.append("\n\n—— 服务端实际返回 ——\n")
+            sb.append(result.rawHead.take(160))
+        }
+
+        val isBlocked = result.error.contains("拦截") || result.error.contains("解析失败")
+        if (isBlocked) {
+            sb.append("\n\n提示：浏览器能开但 App 连不上，通常是网关按请求头判断。")
+            sb.append("\n请到网关把手机 IP 放行，或改用局域网/本地地址测试。")
+        }
+
+        emptyView.text = sb.toString()
+        emptyView.visibility = View.VISIBLE
     }
 
     override fun onPause() {
