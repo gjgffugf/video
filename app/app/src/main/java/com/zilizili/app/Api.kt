@@ -8,6 +8,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import org.json.JSONObject
 import java.io.IOException
+import java.net.URI
 import java.util.concurrent.TimeUnit
 
 /** 一条推送视频 */
@@ -192,11 +193,21 @@ object Api {
         }
     }
 
+    /**
+     * 取站点根地址（scheme://host[:port]）
+     * 用 java.net.URI 而不是 okhttp HttpUrl ——
+     * OkHttp 4.x 的 Kotlin API 里 HttpUrl.parse() 已改为 String.toHttpUrl()，
+     * 且 scheme()/host()/port() 变成了属性，直接调用会编译报错。
+     */
     private fun originOf(endpoint: String): String? {
         return try {
-            val u = HttpUrl.parse(endpoint) ?: return null
-            val port = if (u.port() == 80 || u.port() == 443) "" else ":${u.port()}"
-            "${u.scheme()}://${u.host()}$port"
+            val u = URI(endpoint)
+            val scheme = u.scheme
+            val host = u.host
+            if (scheme.isNullOrBlank() || host.isNullOrBlank()) return null
+            val p = u.port
+            val port = if (p == -1 || p == 80 || p == 443) "" else ":$p"
+            "$scheme://$host$port"
         } catch (e: Exception) {
             null
         }
