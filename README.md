@@ -59,10 +59,47 @@ zilizili/
 | `feed&count=5` | 无 | **随机推送**，App 调这个 |
 | `import&path=source` | token | 扫描本地目录，把已有视频登记入库 |
 | `sync&limit=20` | token | 从远程源站抓取 → 下载到本地 → 算 SHA1 |
-| `probe&url=xxx` | token | 探测源站返回格式（排查用） |
+| `probe&url=xxx` | token | 探测源站格式 + 对比朴素请求/浏览器请求的拦截情况 |
+| `warm&url=xxx` | token | 暖机：先访问站点首页把 Cookie 存下来 |
 | `status` | token | 查看库存 / 推送轮次 / 磁盘占用 |
 | `reset` | token | 立即重置推送池 |
 | `upload` | token | POST 上传视频（form-data: file, title） |
+
+---
+
+## 四·补、WAF / 反爬页处理
+
+源站有 WAF 或反爬页时，服务端默认以**浏览器方式**访问（`browser_mode => true`）：
+
+- **完整浏览器请求头**：Chrome UA、`Accept`、`Accept-Language`、`Upgrade-Insecure-Requests`、`Sec-Fetch-*`、`sec-ch-ua` 客户端提示
+- **持久化 Cookie**：存在 `data/cookie_xxx.txt`，请求自动带上、回写（`.htaccess` 已禁止外部访问）
+- **Referer / Origin**：按目标站点自动生成，模拟同源跳转
+- **HTTP/2**：`CURL_HTTP_VERSION_2TLS`，浏览器都是 HTTP/2
+- **暖机机制**：先访问站点首页建立会话，再带 Referer 请求深层路径；仍被拦则清 Cookie 重来
+- **视频请求降级**：下载时用 `Sec-Fetch-Dest: video` + `Range: bytes=0-`，跟浏览器拉视频一致
+- **礼貌间隔**：`crawl_delay_ms`（默认 800ms），请求间自动 sleep
+
+### 排查
+
+```bash
+# 1. 暖机拿 Cookie
+?action=warm&token=xxx
+
+# 2. 对比"朴素请求"和"浏览器请求"是否被拦
+?action=probe&token=xxx
+```
+
+`probe` 会同时返回 `plain_request.blocked` 和 `browser_request.blocked`，一眼看出伪装是否生效。
+
+### 边界
+
+若对方返回的是**真正的人机验证**（JS 挑战、滑块、验证码、Cloudflare "Just a moment"），那是对方有意设置的访问控制，脚本**不会也不应该**去破解。正确做法是：
+
+1. 在对方网关把本服务器 IP 加入白名单
+2. 改用对方开放的正式接口
+3. 或用 `import` 走本地导入（FTP 传文件），完全绕开抓取
+
+---
 
 ### feed 返回示例
 

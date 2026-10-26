@@ -58,7 +58,39 @@ $CFG = array(
 
     // 识别的视频后缀
     'exts'        => 'mp4,webm,mov,m4v,mkv,ts,flv,m3u8',
+
+    // ============ 浏览器伪装（绕过 WAF / 反爬的基础拦截）============
+    // true = 用浏览器请求头 + 持久化 Cookie + Referer + HTTP/2 访问源站
+    'browser_mode' => true,
+
+    // 伪装成哪个浏览器（可用自己浏览器 F12 里复制的 UA）
+    'browser_ua'  => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+
+    // 浏览器语言头
+    'browser_lang' => 'zh-CN,zh;q=0.9,en;q=0.8',
+
+    // 每次请求之间的礼貌间隔（毫秒）。太小会被判成爬虫，建议 500~1500
+    'crawl_delay_ms' => 800,
 );
+
+// 缺省值兜底：升级脚本时新增的配置项若不存在，自动补上，避免报错
+$CFG = array_merge(array(
+    'token'          => 'change-me-please',
+    'base'           => '',
+    'source_url'     => '',
+    'source_mode'    => 'auto',
+    'import_dir'     => 'source',
+    'video_dir'      => 'videos',
+    'data_dir'       => 'data',
+    'max_bytes'      => 200 * 1024 * 1024,
+    'sync_limit'     => 20,
+    'feed_size'      => 5,
+    'exts'           => 'mp4,webm,mov,m4v,mkv,ts,flv,m3u8',
+    'browser_mode'   => true,
+    'browser_ua'     => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+    'browser_lang'   => 'zh-CN,zh;q=0.9,en;q=0.8',
+    'crawl_delay_ms' => 800,
+), $CFG);
 
 // ---------------- 以下为功能代码，一般不用改 ----------------
 
@@ -156,68 +188,234 @@ function zlz_locked($CFG, $name, $fn) {
     return $result;
 }
 
-// ---- HTTP ----
+// ---- HTTP（浏览器伪装 + Cookie 会话 + 反爬页处理）----
+//
+// 说明：本段只做"让自己的服务端像普通浏览器一样发请求"这件事——
+// 补全浏览器请求头、持久化 Cookie、按站点来源带 Referer、请求间加礼貌间隔。
+// 它适用于你自己有权访问的主机 / 已授权的源站。
+//
+// 如果对方返回的是真正的人机验证（JS 挑战、滑块、验证码），
+// 那是对方有意设置的访问控制：请走"申请接口权限 / 把自己的服务器 IP 加入白名单"，
+// 脚本不会也不应该去破解它。
 
-function zlz_http_get($url, $timeout = 20) {
-    if (function_exists('curl_init')) {
-        $ch = curl_init($url);
-        curl_setopt_array($ch, array(
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_FOLLOWLOCATION => true,
-            CURLOPT_MAXREDIRS      => 5,
-            CURLOPT_CONNECTTIMEOUT => 10,
-            CURLOPT_TIMEOUT        => $timeout,
-            CURLOPT_USERAGENT      => ZLZ_UA,
-            CURLOPT_SSL_VERIFYPEER => false,
-            CURLOPT_SSL_VERIFYHOST => false,
-        ));
-        $body = curl_exec($ch);
-        $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $err = curl_error($ch);
-        curl_close($ch);
-        if ($body !== false) return array($code ? $code : 200, $body, '');
-        return array(0, '', $err);
-    }
-    $ctx = stream_context_create(array(
-        'http' => array('method' => 'GET', 'timeout' => $timeout, 'header' => 'User-Agent: ' . ZLZ_UA . "\r\n"),
-        'ssl'  => array('verify_peer' => false),
-    ));
-    $body = @file_get_contents($url, false, $ctx);
-    if ($body === false) return array(0, '', 'request failed');
-    return array(200, $body, '');
+/** 取站点根地址，用于 Referer / Origin */
+function zlz_origin($url) {
+    $p = parse_url($url);
+    if (!$p || empty($p['host'])) return '';
+    $scheme = isset($p['scheme']) ? $p['scheme'] : 'https';
+    return $scheme . '://' . $p['host'] . (isset($p['port']) ? ':' . $p['port'] : '');
 }
 
-function zlz_download($url, $dest, $maxBytes) {
+/** Cookie 文件（存在 data/ 下，已被 .htaccess 拒绝外部访问） */
+function zlz_cookie_path($CFG) {
+    zlz_mkdir(zlz_path($CFG['data_dir']));
+    $host = parse_url($CFG['source_url'] !== '' ? $CFG['source_url'] : 'http://localhost', PHP_URL_HOST);
+    return zlz_path($CFG['data_dir'] . '/cookie_' . preg_replace('/[^a-z0-9]/i', '_', $host) . '.txt');
+}
+
+/** 生成一套 Chrome 风格请求头。$kind = nav(页面) | media(视频文件) */
+function zlz_browser_headers($CFG, $targetUrl, $referer = '', $kind = 'nav') {
+    $ua = $CFG['browser_ua'];
+    $lang = $CFG['browser_lang'];
+    $origin = zlz_origin($targetUrl);
+
+    $h = array();
+    $h[] = 'User-Agent: ' . $ua;
+    $h[] = 'Accept-Language: ' . $lang;
+
+    if ($kind === 'media') {
+        $h[] = 'Accept: */*';
+        $h[] = 'Sec-Fetch-Dest: video';
+        $h[] = 'Sec-Fetch-Mode: no-cors';
+        $h[] = 'Sec-Fetch-Site: same-origin';
+        $h[] = 'Range: bytes=0-';           // 浏览器拉视频都会带 Range
+    } else {
+        $h[] = 'Accept: text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7';
+        $h[] = 'Upgrade-Insecure-Requests: 1';
+        $h[] = 'Sec-Fetch-Dest: document';
+        $h[] = 'Sec-Fetch-Mode: navigate';
+        $h[] = 'Sec-Fetch-Site: ' . ($referer === '' ? 'none' : 'same-origin');
+        $h[] = 'Sec-Fetch-User: ?1';
+    }
+
+    // Client Hints（现代 Chrome 必带，缺了容易被判为脚本）
+    $h[] = 'sec-ch-ua: "Google Chrome";v="131", "Chromium";v="131", "Not_A Brand";v="24"';
+    $h[] = 'sec-ch-ua-mobile: ?0';
+    $h[] = 'sec-ch-ua-platform: "Windows"';
+
+    if ($referer === '') {
+        $referer = $origin . '/';
+    }
+    if ($referer !== '') {
+        $h[] = 'Referer: ' . $referer;
+        if ($kind !== 'media') $h[] = 'Origin: ' . zlz_origin($referer);
+    }
+    return $h;
+}
+
+/** 判断响应是不是 WAF / 反爬拦截页 */
+function zlz_is_challenge($code, $body) {
+    if ($code == 403 || $code == 429 || $code == 503) return true;
+    if ($body === '') return false;
+
+    // 只取前 8KB 判断，避免大文件误判
+    $head = substr($body, 0, 8192);
+    $markers = array(
+        '__cf_chl', 'cf-browser-verification', 'challenge-platform', 'cf_chl_opt',
+        'Just a moment', 'Checking your browser', 'Attention Required',
+        '_incapsula_', 'Incapsula', 'Sucuri', 'ModSecurity', 'mod_security',
+        'yunsuo', 'Yunsuo', 'safe3waf', 'jiasule', '知道创宇',
+        'policy_default_denied', 'Request denied',
+        'enable JavaScript', 'Please enable JavaScript', 'javascript required',
+        '正在验证', '安全验证', '人机验证', '访问验证', '防火墙', '请输入验证码', '滑动验证',
+    );
+    foreach ($markers as $m) {
+        if (stripos($head, $m) !== false) return true;
+    }
+    return false;
+}
+
+/**
+ * 带浏览器伪装的 GET
+ * @return array(code, body, err)
+ */
+function zlz_http_get($CFG, $url, $timeout = 20, $referer = '', $kind = 'nav') {
+    if (!function_exists('curl_init')) {
+        $hdr = '';
+        foreach (zlz_browser_headers($CFG, $url, $referer, $kind) as $h) $hdr .= $h . "\r\n";
+        $ctx = stream_context_create(array(
+            'http' => array('method' => 'GET', 'timeout' => $timeout, 'header' => $hdr, 'follow_location' => 1),
+            'ssl'  => array('verify_peer' => false),
+        ));
+        $body = @file_get_contents($url, false, $ctx);
+        if ($body === false) return array(0, '', 'request failed');
+        return array(200, $body, '');
+    }
+
+    $ch = curl_init($url);
+    $opts = array(
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_FOLLOWLOCATION => true,
+        CURLOPT_MAXREDIRS      => 5,
+        CURLOPT_CONNECTTIMEOUT => 10,
+        CURLOPT_TIMEOUT        => $timeout,
+        CURLOPT_SSL_VERIFYPEER => false,
+        CURLOPT_SSL_VERIFYHOST => false,
+        // 自动发 Accept-Encoding: gzip,deflate,br 并自动解压
+        CURLOPT_ENCODING       => '',
+        CURLOPT_HTTPHEADER     => zlz_browser_headers($CFG, $url, $referer, $kind),
+    );
+    // 强制 HTTP/2 —— 浏览器都是 HTTP/2，很多 WAF 会据此识别（老环境可能没有此常量）
+    if (defined('CURL_HTTP_VERSION_2TLS')) {
+        $opts[CURLOPT_HTTP_VERSION] = CURL_HTTP_VERSION_2TLS;
+    }
+    if ($CFG['browser_mode']) {
+        $cookieFile = zlz_cookie_path($CFG);
+        $opts[CURLOPT_COOKIEFILE] = $cookieFile;   // 带上之前的 Cookie
+        $opts[CURLOPT_COOKIEJAR]  = $cookieFile;   // 回写新 Cookie
+    }
+    curl_setopt_array($ch, $opts);
+
+    $body = curl_exec($ch);
+    $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    $err = curl_error($ch);
+    curl_close($ch);
+
+    if ($body !== false) return array($code ? $code : 200, $body, '');
+    return array(0, '', $err);
+}
+
+/**
+ * 先访问站点首页拿 Cookie（"暖机"），再请求真正的目标。
+ * 很多 WAF 只拦截"没有会话就直接访问深层路径"的请求。
+ */
+function zlz_http_get_smart($CFG, $url, $timeout = 20) {
+    if (!$CFG['browser_mode']) {
+        return zlz_http_get($CFG, $url, $timeout);
+    }
+
+    $origin = zlz_origin($url);
+
+    // 第 1 步：暖机 —— 用浏览器头访问站点根，建立会话 Cookie
+    zlz_http_get($CFG, $origin . '/', 15, '', 'nav');
+    if ($CFG['crawl_delay_ms'] > 0) usleep($CFG['crawl_delay_ms'] * 1000);
+
+    // 第 2 步：带 Referer 访问目标
+    list($code, $body, $err) = zlz_http_get($CFG, $url, $timeout, $origin . '/', 'nav');
+
+    // 第 3 步：如果还是被拦，清掉 Cookie 重来一次（有时旧 Cookie 已失效）
+    if (zlz_is_challenge($code, $body)) {
+        $cf = zlz_cookie_path($CFG);
+        @unlink($cf);
+        if ($CFG['crawl_delay_ms'] > 0) usleep($CFG['crawl_delay_ms'] * 2000);
+        zlz_http_get($CFG, $origin . '/', 15, '', 'nav');
+        if ($CFG['crawl_delay_ms'] > 0) usleep($CFG['crawl_delay_ms'] * 1000);
+        list($code, $body, $err) = zlz_http_get($CFG, $url, $timeout, $origin . '/', 'nav');
+    }
+
+    return array($code, $body, $err);
+}
+
+function zlz_download($CFG, $url, $dest, $maxBytes, $referer = '') {
     @unlink($dest);
+    if ($referer === '') $referer = zlz_origin($url) . '/';
+
     if (function_exists('curl_init')) {
         $fp = @fopen($dest, 'wb');
         if (!$fp) return array(false, 'cannot create file');
         $ch = curl_init($url);
-        curl_setopt_array($ch, array(
+        $opts = array(
             CURLOPT_FILE           => $fp,
             CURLOPT_FOLLOWLOCATION => true,
             CURLOPT_MAXREDIRS      => 5,
             CURLOPT_CONNECTTIMEOUT => 10,
             CURLOPT_TIMEOUT        => 0,
-            CURLOPT_USERAGENT      => ZLZ_UA,
             CURLOPT_SSL_VERIFYPEER => false,
             CURLOPT_SSL_VERIFYHOST => false,
+            CURLOPT_ENCODING       => '',
+            CURLOPT_HTTPHEADER     => zlz_browser_headers($CFG, $url, $referer, 'media'),
             CURLOPT_NOPROGRESS     => false,
             CURLOPT_PROGRESSFUNCTION => function ($ch, $dlSize, $dlNow, $ulSize, $ulNow) use ($maxBytes) {
                 return ($dlNow > $maxBytes) ? 1 : 0;
             },
-        ));
+        );
+        if ($CFG['browser_mode']) {
+            $cookieFile = zlz_cookie_path($CFG);
+            $opts[CURLOPT_COOKIEFILE] = $cookieFile;
+            $opts[CURLOPT_COOKIEJAR]  = $cookieFile;
+        }
+        if (defined('CURL_HTTP_VERSION_2TLS')) {
+            $opts[CURLOPT_HTTP_VERSION] = CURL_HTTP_VERSION_2TLS;
+        }
+        curl_setopt_array($ch, $opts);
+
         $ok = curl_exec($ch);
         $code = (int) curl_getinfo($ch, CURLINFO_HTTP_CODE);
         $err = curl_error($ch);
         curl_close($ch);
         fclose($fp);
+
         if ($ok === false && $err !== '' && !is_file($dest)) return array(false, $err);
-        if ($code >= 400) { @unlink($dest); return array(false, 'HTTP ' . $code); }
+        if ($code >= 400) {
+            @unlink($dest);
+            // 被 WAF 拦了：暖机后重试一次
+            if ($CFG['browser_mode'] && zlz_is_challenge($code, '')) {
+                if ($CFG['crawl_delay_ms'] > 0) usleep($CFG['crawl_delay_ms'] * 1000);
+                return zlz_download($CFG, $url, $dest, $maxBytes, zlz_origin($url) . '/');
+            }
+            return array(false, 'HTTP ' . $code);
+        }
         if (!is_file($dest) || filesize($dest) == 0) { @unlink($dest); return array(false, 'empty file'); }
         return array(true, '');
     }
-    $data = @file_get_contents($url);
+
+    $hdr = '';
+    foreach (zlz_browser_headers($CFG, $url, $referer, 'media') as $h) $hdr .= $h . "\r\n";
+    $ctx = stream_context_create(array(
+        'http' => array('method' => 'GET', 'timeout' => 60, 'header' => $hdr),
+        'ssl'  => array('verify_peer' => false),
+    ));
+    $data = @file_get_contents($url, false, $ctx);
     if ($data === false) return array(false, 'download failed');
     @file_put_contents($dest, $data);
     return array(true, '');
@@ -358,12 +556,18 @@ function zlz_parse_custom($body, $baseUrl) {
 function zlz_source_list($CFG) {
     $url = $CFG['source_url'];
     if ($url === '') return array();
-    list($code, $body, $err) = zlz_http_get($url);
+    // 用带浏览器伪装 + 暖机的请求
+    list($code, $body, $err) = zlz_http_get_smart($CFG, $url);
     if ($code == 0 || $body === '') {
         throw new Exception('源站请求失败: ' . ($err ? $err : 'HTTP ' . $code));
     }
+    if (zlz_is_challenge($code, $body)) {
+        throw new Exception('被 WAF / 反爬页拦截（HTTP ' . $code . '）。'
+            . '先用 ?action=probe&token=xxx 看原始返回；'
+            . '若是人机验证，请在对方网关把自己的服务器 IP 加入白名单');
+    }
     if ($code >= 400) {
-        throw new Exception('源站返回 HTTP ' . $code . '（可能被网关拦截，见 action=probe）');
+        throw new Exception('源站返回 HTTP ' . $code . '（见 action=probe）');
     }
 
     $mode = $CFG['source_mode'];
@@ -413,7 +617,7 @@ function zlz_mime($ext) {
 $action = strtolower(zlz_p('action', 'feed'));
 $base = zlz_base($CFG);
 
-$ACTIONS = array('feed', 'sync', 'import', 'probe', 'status', 'reset', 'upload');
+$ACTIONS = array('feed', 'sync', 'import', 'probe', 'warm', 'status', 'reset', 'upload');
 if (!in_array($action, $ACTIONS, true)) {
     zlz_out(array('ok' => false, 'error' => 'unknown_action', 'action' => $action, 'available' => $ACTIONS), 404);
 }
@@ -499,23 +703,59 @@ if ($token === '' || !hash_equals($CFG['token'], $token)) {
     zlz_out(array('ok' => false, 'error' => 'unauthorized', 'tip' => '请在 URL 加 ?token=你的令牌'), 401);
 }
 
+// ---------- warm：暖机，先访问站点首页把 Cookie 存下来 ----------
+if ($action === 'warm') {
+    $url = zlz_p('url', $CFG['source_url']);
+    if ($url === '') zlz_out(array('ok' => false, 'error' => 'no_url'), 400);
+    $origin = zlz_origin($url);
+    list($c1, $b1, $e1) = zlz_http_get($CFG, $origin . '/', 20, '', 'nav');
+    $cookie = zlz_cookie_path($CFG);
+    $txt = is_file($cookie) ? @file_get_contents($cookie) : '';
+    $n = 0;
+    foreach (preg_split('/\r\n|\r|\n/', $txt) as $line) {
+        if ($line !== '' && strpos($line, '#') !== 0) $n++;
+    }
+    zlz_out(array(
+        'ok' => true,
+        'origin' => $origin,
+        'home_code' => $c1,
+        'home_bytes' => strlen($b1),
+        'cookies_saved' => $n,
+        'blocked' => zlz_is_challenge($c1, $b1),
+        'tip' => $n > 0 ? 'Cookie 已存好，现在去跑 sync' : '没拿到 Cookie，检查源站是否可达',
+    ));
+}
+
 // ---------- probe：探测源站格式 ----------
 if ($action === 'probe') {
     $url = zlz_p('url', $CFG['source_url']);
     if ($url === '') {
         zlz_out(array('ok' => false, 'error' => 'no_url', 'tip' => '用 ?url=xxx 指定，或先在配置里填 source_url'));
     }
-    list($code, $body, $err) = zlz_http_get($url);
+
+    // A. 先用朴素请求试一次（作为对照）
+    list($rawCode, $rawBody) = zlz_http_get($CFG, $url, 20, '', 'nav');
+    // B. 再用浏览器伪装 + 暖机试一次
+    list($code, $body, $err) = zlz_http_get_smart($CFG, $url);
+
     $out = array(
         'ok' => true,
         'url' => $url,
-        'http_code' => $code,
+        'browser_mode' => $CFG['browser_mode'],
+        'plain_request'   => array('http_code' => $rawCode, 'blocked' => zlz_is_challenge($rawCode, $rawBody)),
+        'browser_request' => array('http_code' => $code, 'blocked' => zlz_is_challenge($code, $body)),
         'curl_error' => $err,
         'bytes' => strlen($body),
         'content_type_guess' => (strpos(ltrim($body), '{') === 0 || strpos(ltrim($body), '[') === 0) ? 'json' : 'html/text',
         'raw_head' => substr($body, 0, 2000),
     );
-    if ($code > 0 && $body !== '') {
+
+    if (zlz_is_challenge($code, $body)) {
+        $out['hint'] = '仍被拦截。若是 JS/滑块/验证码类人机验证，脚本无法也不应绕过 —— '
+            . '请在对方网关把本服务器 IP 加入白名单，或改用对方开放的接口。';
+    }
+
+    if ($code > 0 && $body !== '' && !zlz_is_challenge($code, $body)) {
         $r = zlz_source_list($CFG);
         if (is_array($r) && count($r) == 2 && is_string($r[1])) {
             $out['detected_mode'] = $r[1];
@@ -580,9 +820,11 @@ if ($action === 'sync') {
             $relFile = '';
 
             if ($download) {
+                // 请求间加礼貌间隔，避免被判为爬虫
+                if ($CFG['crawl_delay_ms'] > 0) usleep($CFG['crawl_delay_ms'] * 1000);
                 $tmpRel = $CFG['video_dir'] . '/dl_' . md5(uniqid('', true) . $url) . '.' . $ext;
                 $tmpAbs = zlz_path($tmpRel);
-                list($ok, $err) = zlz_download($url, $tmpAbs, $CFG['max_bytes']);
+                list($ok, $err) = zlz_download($CFG, $url, $tmpAbs, $CFG['max_bytes']);
                 if (!$ok || !is_file($tmpAbs)) {
                     @unlink($tmpAbs);
                     $report['failed']++;
