@@ -8,14 +8,20 @@ on:
   workflow_dispatch:
     inputs:
       api_base:
-        description: '服务端地址（如 https://your-host.com/zilizili/server）'
+        description: '服务端地址（如 https://xfan.ccccocccc.cc/api.php）'
         required: false
         default: ''
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 40
+
+    env:
+      # ubuntu-latest 镜像自带 Android SDK，直接指过去即可，无需 setup-android
+      ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
+      ANDROID_HOME: /usr/local/lib/android/sdk
+      GRADLE_OPTS: -Dorg.gradle.daemon=false -Dorg.gradle.jvmargs=-Xmx2048m
 
     steps:
       - name: Checkout
@@ -27,15 +33,61 @@ jobs:
           distribution: temurin
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      # ---------------------------------------------------------------
+      # 关键修复：不再用 android-actions/setup-android@v3
+      # 它会重新下载 cmdline-tools 并用交互式 sdkmanager --licenses，
+      # 卡在 "Review licenses that have not been accepted (y/N)?" 上直到超时。
+      # 这里改为：预写 license hash + 非交互 piped yes 兜底。
+      # ---------------------------------------------------------------
+      - name: Accept Android SDK licenses
+        run: |
+          set +e
+          mkdir -p "$ANDROID_HOME/licenses"
+
+          # 预写常见 license hash（覆盖 platform / build-tools / platform-tools / googletv 等）
+          printf '%s\n' 24333f8a63b7025c 8933bad161af4178 d975f751698a77b7 \
+            > "$ANDROID_HOME/licenses/android-sdk-license"
+          printf '%s\n' 84831b9409646b73 \
+            > "$ANDROID_HOME/licenses/android-sdk-preview-license"
+          printf '%s\n' 601085b94cd77f0b \
+            > "$ANDROID_HOME/licenses/android-googletv-license"
+          printf '%s\n' 601085b94cd77f0b \
+            > "$ANDROID_HOME/licenses/google-tv-license"
+          printf '%s\n' e9b8f8a3ef4b0e0e \
+            > "$ANDROID_HOME/licenses/mips-android-sysimage-license"
+          printf '%s\n' 859f8516691d9b1b \
+            > "$ANDROID_HOME/licenses/android-sdk-arm-dbt-license"
+
+          # 兜底：非交互方式再确认一次，管道喂多个 y，避免任何残留提示卡住
+          SDKMGR=$(ls -d "$ANDROID_SDK_ROOT"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1)
+          echo "sdkmanager: ${SDKMGR:-none}"
+          if [ -n "$SDKMGR" ]; then
+            yes y 2>/dev/null | timeout 180 "$SDKMGR" --licenses >/dev/null 2>&1
+          fi
+          echo "license step done"
+          exit 0
+
+      - name: Install SDK packages
+        run: |
+          set +e
+          SDKMGR=$(ls -d "$ANDROID_SDK_ROOT"/cmdline-tools/*/bin/sdkmanager 2>/dev/null | head -1)
+          if [ -z "$SDKMGR" ]; then
+            echo "未找到 sdkmanager，交给 Gradle 自动下载 SDK 组件"
+            exit 0
+          fi
+          yes y 2>/dev/null | timeout 600 "$SDKMGR" --install \
+            "platform-tools" "platforms;android-34" "build-tools;34.0.0" >/dev/null 2>&1
+          echo "sdk install step done (exit ignored)"
+          ls "$ANDROID_SDK_ROOT/platforms" 2>/dev/null || true
+          exit 0
 
       - name: Install Gradle 8.9
         run: |
-          curl -sSL https://services.gradle.org/distributions/gradle-8.9-bin.zip -o /tmp/gradle.zip
-          sudo unzip -q /tmp/gradle.zip -d /opt
+          set -e
+          curl -sSL -o /tmp/gradle.zip https://services.gradle.org/distributions/gradle-8.9-bin.zip
+          sudo unzip -q -o /tmp/gradle.zip -d /opt
           sudo ln -sfn /opt/gradle-8.9 /opt/gradle
-          echo "/opt/gradle/bin" >> $GITHUB_PATH
+          echo "/opt/gradle/bin" >> "$GITHUB_PATH"
 
       - name: Build Debug APK
         working-directory: ./app
@@ -45,8 +97,10 @@ jobs:
           gradle --no-daemon --stacktrace :app:assembleDebug
 
       - name: Upload APK artifact
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: zilizili-debug
           path: app/app/build/outputs/apk/debug/*.apk
           retention-days: 30
+          if-no-files-found: warn
