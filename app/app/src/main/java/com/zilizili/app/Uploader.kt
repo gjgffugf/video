@@ -234,8 +234,10 @@ object Uploader {
                     // OkHttp 4.x：MediaType.parse() / RequestBody.create() 都是
                     // ERROR 级废弃，已改为 Kotlin 扩展函数，必须用下面这种写法
                     val body = chunk.toRequestBody(OCTET_STREAM)
+                    // 分片是 raw body，token 只能放 URL 上（服务端鉴权在 action 分发之前）
                     val r = post(
-                        endpoint + "?action=upload_chunk&upload_id=" + uploadId + "&index=" + index,
+                        endpoint + "?action=upload_chunk&upload_id=" + uploadId
+                            + "&index=" + index + "&token=" + Uri.encode(token),
                         body
                     )
                     if (r.isNullOrBlank()) {
