@@ -47,8 +47,10 @@ $CFG = array(
     // JSON 状态文件目录
     'data_dir'    => 'data',
 
-    // 单个视频大小上限（虚拟主机磁盘小，按需调）
-    'max_bytes'   => 200 * 1024 * 1024,
+    // 单个视频大小上限。
+    // ⚠️ iFastNet / InfinityFree 免费版单文件上限约 10MB，务必按你的主机调整。
+    // 换到无此限制的主机（付费主机 / 对象存储）后再调大。
+    'max_bytes'   => 10 * 1024 * 1024,
 
     // 单次 sync / import 最多处理多少个
     'sync_limit'  => 20,
@@ -82,7 +84,7 @@ $CFG = array_merge(array(
     'import_dir'     => 'source',
     'video_dir'      => 'videos',
     'data_dir'       => 'data',
-    'max_bytes'      => 200 * 1024 * 1024,
+    'max_bytes'      => 10 * 1024 * 1024,
     'sync_limit'     => 20,
     'feed_size'      => 5,
     'exts'           => 'mp4,webm,mov,m4v,mkv,ts,flv,m3u8',
@@ -268,6 +270,9 @@ function zlz_is_challenge($code, $body) {
         'policy_default_denied', 'Request denied',
         'enable JavaScript', 'Please enable JavaScript', 'javascript required',
         '正在验证', '安全验证', '人机验证', '访问验证', '防火墙', '请输入验证码', '滑动验证',
+        // iFastNet / InfinityFree 免费版浏览器验证（aes.js 挑战，免费版强制且无法关闭）
+        'aes.js', 'This site requires Javascript', 'requires javascript to work',
+        'infinityfree', 'ifastnet',
     );
     foreach ($markers as $m) {
         if (stripos($head, $m) !== false) return true;
@@ -617,7 +622,7 @@ function zlz_mime($ext) {
 $action = strtolower(zlz_p('action', 'feed'));
 $base = zlz_base($CFG);
 
-$ACTIONS = array('feed', 'sync', 'import', 'probe', 'warm', 'status', 'reset', 'upload');
+$ACTIONS = array('feed', 'sync', 'import', 'probe', 'warm', 'selftest', 'status', 'reset', 'upload');
 if (!in_array($action, $ACTIONS, true)) {
     zlz_out(array('ok' => false, 'error' => 'unknown_action', 'action' => $action, 'available' => $ACTIONS), 404);
 }
@@ -724,6 +729,52 @@ if ($action === 'warm') {
         'blocked' => zlz_is_challenge($c1, $b1),
         'tip' => $n > 0 ? 'Cookie 已存好，现在去跑 sync' : '没拿到 Cookie，检查源站是否可达',
     ));
+}
+
+// ---------- selftest：检查本主机是否满足运行条件 ----------
+if ($action === 'selftest') {
+    $uploadMax = ini_get('upload_max_filesize');
+    $postMax = ini_get('post_max_size');
+    $toBytes = function ($v) {
+        $v = strtolower(trim((string) $v));
+        if ($v === '' || $v === '0') return 0;
+        $unit = substr($v, -1);
+        $n = (float) $v;
+        if ($unit === 'g') return (int) ($n * 1073741824);
+        if ($unit === 'm') return (int) ($n * 1048576);
+        if ($unit === 'k') return (int) ($n * 1024);
+        return (int) $n;
+    };
+
+    $checks = array();
+    $checks['php_version'] = PHP_VERSION;
+    $checks['curl_available'] = function_exists('curl_init');
+    $checks['allow_url_fopen'] = (bool) ini_get('allow_url_fopen');
+    $checks['exec_disabled'] = !function_exists('exec');
+    $checks['upload_max_filesize'] = $uploadMax;
+    $checks['post_max_size'] = $postMax;
+    $checks['upload_limit_bytes'] = $toBytes($uploadMax);
+    $checks['max_execution_time'] = ini_get('max_execution_time');
+    $checks['memory_limit'] = ini_get('memory_limit');
+    $checks['data_writable'] = is_writable(zlz_path($CFG['data_dir']));
+    $checks['video_dir_writable'] = is_writable(zlz_path($CFG['video_dir']));
+    $free = @disk_free_space(ZLZ_ROOT);
+    $checks['disk_free_mb'] = $free === false ? null : round($free / 1048576, 1);
+    $checks['max_bytes_config'] = round($CFG['max_bytes'] / 1048576, 1) . ' MB';
+
+    // 自身可达性：带浏览器头访问自己的 feed，看是否被本机的验证系统拦
+    $self = zlz_base($CFG) . '/api.php?action=feed&count=1';
+    list($sc, $sb) = zlz_http_get($CFG, $self, 20, '', 'nav');
+    $checks['self_request'] = array(
+        'url' => $self,
+        'http_code' => $sc,
+        'blocked' => zlz_is_challenge($sc, $sb),
+        'note' => zlz_is_challenge($sc, $sb)
+            ? '⚠️ 服务端自己访问自己都被拦 —— 说明是主机层面的浏览器验证（如 iFastNet 免费版），App 必然连不上'
+            : '本机自访问正常',
+    );
+
+    zlz_out(array('ok' => true, 'selftest' => $checks));
 }
 
 // ---------- probe：探测源站格式 ----------

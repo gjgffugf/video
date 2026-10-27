@@ -9,7 +9,9 @@ import android.widget.Toast
 import androidx.media3.common.MediaItem
 import androidx.media3.common.PlaybackException
 import androidx.media3.common.Player
+import androidx.media3.datasource.okhttp.OkHttpDataSource
 import androidx.media3.exoplayer.ExoPlayer
+import androidx.media3.exoplayer.source.DefaultMediaSourceFactory
 import androidx.media3.ui.PlayerView
 import androidx.recyclerview.widget.RecyclerView
 
@@ -118,21 +120,29 @@ class FeedAdapter : RecyclerView.Adapter<FeedAdapter.VH>() {
                 if (item.size > 0) append("  ·  ").append(formatSize(item.size))
             }
 
-            val p = player ?: ExoPlayer.Builder(itemView.context).build().also { exo ->
-                exo.repeatMode = Player.REPEAT_MODE_ONE
-                exo.addListener(object : Player.Listener {
-                    override fun onPlaybackStateChanged(state: Int) {
-                        loadingView.visibility =
-                            if (state == Player.STATE_BUFFERING) View.VISIBLE else View.GONE
-                    }
+            // 复用 Api 的 OkHttpClient —— 视频请求自动带上验证 Cookie 和浏览器头，
+            // 否则视频直链也会被同一层验证挡住
+            val p = player ?: ExoPlayer.Builder(itemView.context)
+                .setMediaSourceFactory(
+                    DefaultMediaSourceFactory(
+                        OkHttpDataSource.Factory(Api.httpClient).setUserAgent(Browser.UA)
+                    )
+                )
+                .build().also { exo ->
+                    exo.repeatMode = Player.REPEAT_MODE_ONE
+                    exo.addListener(object : Player.Listener {
+                        override fun onPlaybackStateChanged(state: Int) {
+                            loadingView.visibility =
+                                if (state == Player.STATE_BUFFERING) View.VISIBLE else View.GONE
+                        }
 
-                    override fun onPlayerError(error: PlaybackException) {
-                        loadingView.visibility = View.GONE
-                    }
-                })
-                playerView.player = exo
-                player = exo
-            }
+                        override fun onPlayerError(error: PlaybackException) {
+                            loadingView.visibility = View.GONE
+                        }
+                    })
+                    playerView.player = exo
+                    player = exo
+                }
 
             if (p.currentMediaItem?.mediaId != item.sha1) {
                 p.setMediaItem(

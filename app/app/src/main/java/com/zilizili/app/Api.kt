@@ -6,6 +6,9 @@ import okhttp3.HttpUrl
 import okhttp3.Interceptor
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import android.content.Context
+import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.toHttpUrlOrNull
 import org.json.JSONObject
 import java.io.IOException
 import java.net.URI
@@ -26,7 +29,9 @@ data class FeedResult(
     val ok: Boolean,
     val items: List<VideoItem> = emptyList(),
     val error: String = "",
-    val rawHead: String = ""
+    val rawHead: String = "",
+    val waf: String = "",                 // 识别出的拦截方，如 "Cloudflare JS 挑战"
+    val isJsChallenge: Boolean = false    // 是否是需要执行 JS 的人机验证
 )
 
 /**
@@ -72,6 +77,57 @@ object Browser {
         val head = body.take(4096).lowercase()
         return BLOCK_MARKERS.any { head.contains(it.lowercase()) }
     }
+
+    /** 常见拦截方指纹，用来判断到底是谁在挡 */
+    private val WAF_SIGNATURES = listOf(
+        "iFastNet / InfinityFree 浏览器验证（免费版强制，无法关闭）" to listOf(
+            "aes.js", "this site requires javascript", "requires javascript to work",
+            "infinityfree", "ifastnet", "?i=1"
+        ),
+        "Cloudflare（JS 挑战 / 盾)" to listOf(
+            "__cf_chl", "cf-browser-verification", "challenge-platform",
+            "cf_chl_opt", "Just a moment", "Checking your browser", "cf-ray"
+        ),
+        "Pangolin 网关（策略拒绝）" to listOf(
+            "policy_default_denied", "Request denied", "main-policy", "pangolin"
+        ),
+        "Incapsula / Imperva" to listOf("_incapsula_", "Incapsula", "visid_incap"),
+        "Sucuri" to listOf("Sucuri", "sucuri_cloudproxy"),
+        "ModSecurity / 云 WAF" to listOf("ModSecurity", "mod_security", "yunsuo", "safe3waf", "jiasule"),
+        "国内云 WAF 人机验证" to listOf(
+            "正在验证", "安全验证", "人机验证", "访问验证", "请输入验证码", "滑动验证"
+        )
+    )
+
+    /** 返回识别出的拦截方名称，识别不出返回空串 */
+    fun detectWaf(body: String): String {
+        if (body.isBlank()) return ""
+        val head = body.take(8192).lowercase()
+        for ((name, sigs) in WAF_SIGNATURES) {
+            if (sigs.any { head.contains(it.lowercase()) }) return name
+        }
+        return ""
+    }
+
+    /**
+     * 是否是"必须执行 JS 才能通过"的人机验证页。
+     * 这类页面浏览器能过、普通 HTTP 客户端过不了 —— 只能靠放行规则解决，
+     * 不该也不能用脚本去破解。
+     */
+    fun isJsChallenge(body: String): Boolean {
+        if (body.isBlank()) return false
+        val head = body.take(8192).lowercase()
+        val signs = listOf(
+            "cf-browser-verification", "challenge-platform", "__cf_chl", "cf_chl_opt",
+            "just a moment", "checking your browser",
+            "_incapsula_", "sucuri_cloudproxy",
+            "enable javascript", "javascript required", "请开启javascript",
+            "this site requires javascript", "requires javascript to work", "aes.js",
+            "正在验证", "安全验证", "人机验证", "滑动验证", "请输入验证码"
+        )
+        val hasScript = head.contains("<script")
+        return hasScript && signs.any { head.contains(it) }
+    }
 }
 
 /** 简易 Cookie 会话：按域名存，跨请求复用 */
@@ -97,6 +153,23 @@ object SessionCookieJar : CookieJar {
 
     @Synchronized
     fun clear() = store.clear()
+
+    /** 把 WebView 拿到的原始 Cookie 串灌进来，让后续 OkHttp 请求复用 */
+    @Synchronized
+    fun putFromRaw(url: String, raw: String) {
+        val httpUrl = url.toHttpUrlOrNull() ?: return
+        val cookies = raw.split(";")
+            .map { it.trim() }
+            .filter { it.isNotBlank() }
+            .mapNotNull { runCatching { Cookie.parse(httpUrl, it) }.getOrNull() }
+        if (cookies.isNotEmpty()) {
+            val bucket = store.getOrPut(httpUrl.host) { mutableListOf() }
+            cookies.forEach { c ->
+                bucket.removeAll { it.name == c.name }
+                if (c.expiresAt > System.currentTimeMillis()) bucket.add(c)
+            }
+        }
+    }
 }
 
 /** 给每个请求套上浏览器头 */
@@ -116,7 +189,10 @@ class BrowserHeadersInterceptor : Interceptor {
 /** 与 PHP 服务端通信 */
 object Api {
 
-    private val client: OkHttpClient = OkHttpClient.Builder()
+    /** 播放器复用同一个 client，这样视频请求自动带上 Cookie 与浏览器头 */
+    val httpClient: OkHttpClient by lazy { buildClient() }
+
+    private fun buildClient(): OkHttpClient = OkHttpClient.Builder()
         .cookieJar(SessionCookieJar)
         .addInterceptor(BrowserHeadersInterceptor())
         .followRedirects(true)
@@ -138,24 +214,30 @@ object Api {
             warmUp(endpoint)
 
             val request = Request.Builder().url(url).get().build()
-            client.newCall(request).execute().use { resp ->
+            httpClient.newCall(request).execute().use { resp ->
                 val body = resp.body?.string().orEmpty()
 
                 if (!resp.isSuccessful) {
                     return FeedResult(
                         ok = false,
                         error = "HTTP ${resp.code}",
-                        rawHead = body.take(300)
+                        rawHead = body.take(400),
+                        waf = Browser.detectWaf(body),
+                        isJsChallenge = Browser.isJsChallenge(body)
                     )
                 }
                 if (body.isBlank()) {
                     return FeedResult(ok = false, error = "响应内容为空")
                 }
                 if (Browser.looksBlocked(body)) {
+                    val waf = Browser.detectWaf(body)
+                    val js = Browser.isJsChallenge(body)
                     return FeedResult(
                         ok = false,
-                        error = "疑似被 WAF / 反爬页拦截",
-                        rawHead = body.take(300)
+                        error = if (js) "被人机验证页拦截（需执行 JS）" else "疑似被 WAF / 反爬页拦截",
+                        rawHead = body.take(400),
+                        waf = waf,
+                        isJsChallenge = js
                     )
                 }
 
@@ -168,13 +250,62 @@ object Api {
         }
     }
 
+    /**
+     * 三级降级拉取：
+     *   1) OkHttp 直连（快）
+     *   2) 失败 -> 用 WebView 打开站点过验证，把 Cookie 灌回 OkHttp，再试一次
+     *   3) 仍失败 -> 直接在 WebView 里用 JS fetch 拿响应文本
+     *
+     * @param context 用于创建 WebView（内部已转 applicationContext，不会泄漏 Activity）
+     */
+    suspend fun feedSmart(context: Context, endpoint: String, count: Int): FeedResult {
+        val origin = WebSession.originOf(endpoint)
+        val url = endpoint.trimEnd('/') + "?action=feed&count=$count"
+
+        // ---- 1) OkHttp 直连 ----
+        val first = feed(endpoint, count)
+        if (first.ok) return first
+
+        // ---- 2) WebView 过验证，拿 Cookie 后重试 ----
+        val rawCookie = withTimeoutOrNull(20_000) {
+            WebSession.warmUp(context, origin)
+        }.orEmpty()
+
+        if (rawCookie.isNotBlank()) {
+            SessionCookieJar.putFromRaw(origin + "/", rawCookie)
+            val second = feed(endpoint, count)
+            if (second.ok) return second
+            // ---- 3) WebView 内 JS fetch ----
+            val text = withTimeoutOrNull(25_000) {
+                WebSession.fetchText(context, origin, url)
+            }
+            if (!text.isNullOrBlank()) {
+                val parsed = parse(text)
+                if (parsed.ok && parsed.items.isNotEmpty()) return parsed
+                if (parsed.ok) return second.copy(error = "服务端返回 0 条视频")
+                return parsed
+            }
+            return second
+        }
+
+        // Cookie 都没拿到，直接走 WebView fetch 兜底
+        val text = withTimeoutOrNull(25_000) {
+            WebSession.fetchText(context, origin, url)
+        }
+        if (!text.isNullOrBlank()) return parse(text)
+
+        return first.copy(
+            error = first.error + "（WebView 兜底也未取到内容）"
+        )
+    }
+
     /** 诊断用：返回服务端原始响应的前 500 字符 */
     fun diag(endpoint: String): String {
         val url = endpoint.trimEnd('/') + "?action=feed&count=1"
         return try {
             warmUp(endpoint)
             val request = Request.Builder().url(url).get().build()
-            client.newCall(request).execute().use { resp ->
+            httpClient.newCall(request).execute().use { resp ->
                 "HTTP ${resp.code}\n" + (resp.body?.string().orEmpty().take(500))
             }
         } catch (e: Exception) {
@@ -187,7 +318,7 @@ object Api {
         val origin = originOf(endpoint) ?: return
         try {
             val request = Request.Builder().url("$origin/").get().build()
-            client.newCall(request).execute().use { /* 只建立会话，忽略内容 */ }
+            httpClient.newCall(request).execute().use { /* 只建立会话，忽略内容 */ }
         } catch (e: Exception) {
             // 暖机失败无所谓，继续走主请求
         }
