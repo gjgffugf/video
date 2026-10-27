@@ -153,9 +153,6 @@ object SessionCookieJar : CookieJar {
         return bucket.toList()
     }
 
-    @Synchronized
-    fun clear() = store.clear()
-
     /**
      * 把 WebView 拿到的原始 Cookie 串灌进来（形如 "a=1; b=2"），
      * 拦截器会在后续请求里直接带 Cookie 头。
