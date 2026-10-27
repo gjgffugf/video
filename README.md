@@ -63,7 +63,10 @@ zilizili/
 | `warm&url=xxx` | token | 暖机：先访问站点首页把 Cookie 存下来 |
 | `status` | token | 查看库存 / 推送轮次 / 磁盘占用 |
 | `reset` | token | 立即重置推送池 |
-| `upload` | token | POST 上传视频（form-data: file, title） |
+| `upload` | token | 整文件单次上传（小文件备选，form-data: file, title） |
+| `upload_init` | token | 分片上传登记，返回 upload_id + 已收分片（支持秒传/续传） |
+| `upload_chunk` | token | 上传单个分片（raw body + `upload_id` + `index`） |
+| `upload_finish` | token | 校验 size + sha1，落盘入库 |
 
 ---
 
@@ -299,6 +302,111 @@ iFastNet 免费版强制开启「Browser Security System」——一个基于 **
 访问 `?action=selftest&token=xxx`，它会检查 curl、上传限制、目录可写性，并让服务端**自己访问自己**——如果连自己都被拦，就确认是主机层面的验证系统。
 
 App 端也已加识别：检测到 iFastNet 特征时会直接提示「免费版强制开启浏览器验证，无法关闭」。
+
+---
+
+## 七·补、上传视频（250MB 以内）
+
+App 右下角「上传」→ 选视频 → 自动算 SHA-1 → 分片上传 → 进度条 → 完成。
+
+### 为什么必须分片
+
+虚拟主机 `upload_max_filesize` / `post_max_size` 通常只有 2~20MB，**单次 POST 传 250MB 必失败**。所以走三段式：
+
+```
+upload_init   App 带上 sha1/size -> 服务端登记，返回 upload_id + 已收分片
+upload_chunk  每片 2MB，raw body 逐个 POST（支持断点续传）
+upload_finish 服务端校验 size + sha1 -> 落盘入库
+```
+
+### 关键设计
+
+- **App 端算 SHA-1**：流式喂 `MessageDigest`，250MB 不进内存；选完文件就显示指纹
+- **秒传**：`upload_init` 发现库里已有同 SHA-1 且文件还在 → 直接返回成功，不传字节
+- **断点续传**：`upload_init` 返回已收分片索引，App 只补缺失的片
+- **服务端校验**：`upload_finish` 会重算 `sha1_file()` 与客户端比对，不一致直接拒绝写入
+- **自动清理**：超过 `chunk_ttl`（默认 24h）的分片临时文件会被 GC
+
+### 配置
+
+`server/api.php`：
+
+```php
+'upload_max_bytes' => 250 * 1024 * 1024,  // 单文件上限
+'chunk_dir'        => 'data/uploads',     // 分片临时目录
+'chunk_ttl'        => 24 * 3600,
+```
+
+`app/gradle.properties`：
+
+```properties
+UPLOAD_TOKEN=改成和服务端 $CFG['token'] 一样的值
+```
+
+⚠️ **令牌写在 App 里会被反编译拿到**。学习测试无所谓，正式用请给上传单独开一个低权限令牌。
+
+⚠️ **iFastNet 免费版注意**：分片绕过了 `post_max_size`，但**最终文件仍受磁盘配额（约 5GB）和主机单文件策略限制**。传大文件前先跑 `?action=selftest` 看 `disk_free_mb`。
+
+---
+
+## 七·再补、应用内更新
+
+每次启动自动检查，**不依赖浏览器**，全程 OkHttp + 进度条 + 调起系统安装界面。
+
+### 更新源（代理）
+
+`raw.githubusercontent.com` 国内经常连不上，所以按顺序尝试：
+
+1. `raw.githubusercontent.com`（直连）
+2. `cdn.jsdelivr.net/gh/...`（**jsDelivr，官方 CDN，最稳**）
+3. `gh-proxy.com/...`
+4. `ghproxy.net/...`
+5. `raw.fastgit.org/...`
+6. `gh.llkk.cc/...`
+
+第一个返回合法 JSON 的就用它。APK 下载同样会在直连失败时自动套代理前缀重试。
+
+### videoupdate.json 格式
+
+仓库根目录放一份（示例已附在项目里）：
+
+```json
+{
+  "versionCode": 2,
+  "versionName": "1.1",
+  "apkUrl": "https://github.com/gjgffugf/update/releases/download/v1.1/zilizili-v1.1.apk",
+  "size": 0,
+  "changelog": "更新说明",
+  "force": false
+}
+```
+
+- `versionCode` 大于 App 当前版本才弹更新
+- `force: true` 时不显示「稍后」，必须更新
+- `size` 填 0 则用 HTTP Content-Length
+
+### 修改更新源
+
+`app/gradle.properties`：
+
+```properties
+UPDATE_OWNER=gjgffugf
+UPDATE_REPO=update
+UPDATE_BRANCH=main
+UPDATE_FILE=videoupdate.json
+```
+
+### 发版流程
+
+1. 改 `app/app/build.gradle.kts` 里的 `versionCode` / `versionName`（+1）
+2. 重新构建 APK
+3. 把 APK 传到上面的 `apkUrl`
+4. 更新 `videoupdate.json` 的 `versionCode` / `versionName` / `apkUrl` / `changelog`
+5. 推送到 `gjgffugf/update` 的 `main` 分支
+
+> Android 8+ 安装需要 `REQUEST_INSTALL_PACKAGES` 权限（已加）。
+> APK 通过 FileProvider 共享（已配 `res/xml/file_paths.xml`）。
+> jsDelivr 有缓存，改完 JSON 后可能要等几分钟生效。
 
 ---
 

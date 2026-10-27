@@ -1,15 +1,20 @@
 package com.zilizili.app
 
+import android.content.Intent
 import android.os.Bundle
 import android.view.View
+import android.widget.Button
 import android.widget.ProgressBar
 import android.widget.TextView
+import android.widget.Toast
+import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import androidx.lifecycle.lifecycleScope
 import androidx.viewpager2.widget.ViewPager2
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.io.File
 
 class MainActivity : AppCompatActivity() {
 
@@ -60,7 +65,14 @@ class MainActivity : AppCompatActivity() {
             if (adapter.size == 0) loadMore()
         }
 
+        findViewById<Button>(R.id.btnUploadEntry).setOnClickListener {
+            startActivity(Intent(this, UploadActivity::class.java))
+        }
+
         loadMore()
+
+        // 每次启动检查更新：直连 + 多代理镜像，全程 App 内完成
+        checkUpdate()
     }
 
     private fun loadMore() {
@@ -84,7 +96,7 @@ class MainActivity : AppCompatActivity() {
                     !result.ok -> showError(result)
                     result.items.isEmpty() && adapter.size == 0 -> {
                         emptyView.text =
-                            "服务端还没有视频\n\n先访问\napi.php?action=import&token=你的令牌\n导入一批，然后点此重试"
+                            "服务端还没有视频\n\n点右下角「上传」添加，或访问\napi.php?action=import&token=你的令牌\n导入一批"
                         emptyView.visibility = View.VISIBLE
                     }
                     else -> {
@@ -140,6 +152,81 @@ class MainActivity : AppCompatActivity() {
 
         emptyView.text = sb.toString()
         emptyView.visibility = View.VISIBLE
+    }
+
+    // ---------- 应用内更新 ----------
+
+    private fun checkUpdate() {
+        lifecycleScope.launch(Dispatchers.IO) {
+            val info = Updater.check() ?: return@launch
+            if (!Updater.hasUpdate(info)) return@launch
+            withContext(Dispatchers.Main) {
+                if (!isFinishing) showUpdateDialog(info)
+            }
+        }
+    }
+
+    private fun showUpdateDialog(info: UpdateInfo) {
+        val view = layoutInflater.inflate(R.layout.dialog_update, null)
+        val pb = view.findViewById<ProgressBar>(R.id.pbUpdate)
+        val tvPercent = view.findViewById<TextView>(R.id.tvUpdatePercent)
+        val tvChangelog = view.findViewById<TextView>(R.id.tvChangelog)
+        val tvTitle = view.findViewById<TextView>(R.id.tvTitle)
+        val btnRow = view.findViewById<View>(R.id.btnRow)
+        val btnLater = view.findViewById<Button>(R.id.btnLater)
+        val btnUpdate = view.findViewById<Button>(R.id.btnUpdate)
+
+        tvTitle.text = "发现新版本 v${info.versionName}"
+        tvChangelog.text = buildString {
+            append("当前：v${BuildConfig.APP_VERSION_NAME} (${BuildConfig.APP_VERSION_CODE})\n")
+            append("新版：v${info.versionName} (${info.versionCode})")
+            if (info.changelog.isNotBlank()) append("\n\n").append(info.changelog)
+        }
+
+        val dialog = AlertDialog.Builder(this)
+            .setView(view)
+            .setCancelable(!info.force)
+            .create()
+
+        // 强制更新时不给"稍后"
+        btnLater.visibility = if (info.force) View.GONE else View.VISIBLE
+        btnLater.setOnClickListener { dialog.dismiss() }
+
+        btnUpdate.setOnClickListener {
+            btnRow.visibility = View.GONE
+            pb.visibility = View.VISIBLE
+            tvPercent.visibility = View.VISIBLE
+            pb.progress = 0
+            tvPercent.text = "0%"
+
+            lifecycleScope.launch {
+                val apk: File? = Updater.downloadApk(this@MainActivity, info) { p ->
+                    pb.progress = p.percent
+                    tvPercent.text = "${p.percent}%  (${formatSize(p.downloadedBytes)} / ${formatSize(p.totalBytes)})"
+                }
+
+                if (apk != null) {
+                    dialog.dismiss()
+                    Toast.makeText(this@MainActivity, "下载完成，开始安装", Toast.LENGTH_SHORT).show()
+                    Updater.install(this@MainActivity, apk)
+                } else {
+                    tvPercent.text = "下载失败，请检查网络后重试"
+                    btnRow.visibility = View.VISIBLE
+                    pb.visibility = View.GONE
+                }
+            }
+        }
+
+        dialog.show()
+    }
+
+    private fun formatSize(bytes: Long): String {
+        val mb = bytes / 1048576.0
+        return when {
+            mb >= 1 -> "%.1f MB".format(mb)
+            bytes >= 1024 -> "%.0f KB".format(bytes / 1024.0)
+            else -> "$bytes B"
+        }
     }
 
     override fun onPause() {

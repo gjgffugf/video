@@ -1,0 +1,8 @@
+{
+  "versionCode": 2,
+  "versionName": "1.1",
+  "apkUrl": "https://github.com/gjgffugf/update/releases/download/v1.1/zilizili-v1.1.apk",
+  "size": 0,
+  "changelog": "- 新增视频上传：250MB 以内，分片 + 断点续传 + 实时进度\n- 新增应用内更新：多代理源拉取，App 内下载安装\n- 优化弱网与 WAF 环境下的连接策略",
+  "force": false
+}

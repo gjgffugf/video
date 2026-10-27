@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 更新下载的 APK 放在 cacheDir/update/ 下 -->
+    <cache-path
+        name="update"
+        path="update/" />
+</paths>

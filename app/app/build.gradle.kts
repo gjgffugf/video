@@ -3,6 +3,10 @@ plugins {
     id("org.jetbrains.kotlin.android")
 }
 
+/** 读 gradle.properties / -Pxxx= 传入的字符串配置 */
+fun Project.propStr(key: String, fallback: String): String =
+    (findProperty(key) as String?).takeUnless { it.isNullOrBlank() } ?: fallback
+
 android {
     namespace = "com.zilizili.app"
     compileSdk = 34
@@ -19,6 +23,22 @@ android {
             .takeUnless { it.isNullOrBlank() }
             ?: "https://xfan.ccccocccc.cc/api.php"
         buildConfigField("String", "API_BASE", "\"$apiBase\"")
+
+        // 上传接口令牌（对应服务端 $CFG['token']）
+        val upToken = (project.findProperty("UPLOAD_TOKEN") as String?)
+            .takeUnless { it.isNullOrBlank() }
+            ?: "change-me-please"
+        buildConfigField("String", "UPLOAD_TOKEN", "\"$upToken\"")
+
+        // 版本码：用于和 videoupdate.json 里的 versionCode 比较
+        buildConfigField("int", "APP_VERSION_CODE", versionCode.toString())
+        buildConfigField("String", "APP_VERSION_NAME", "\"$versionName\"")
+
+        // 更新源：GitHub 仓库坐标，App 会据此拼出 raw + 多个代理镜像
+        buildConfigField("String", "UPDATE_OWNER", "\"${propStr("UPDATE_OWNER", "gjgffugf")}\"")
+        buildConfigField("String", "UPDATE_REPO", "\"${propStr("UPDATE_REPO", "update")}\"")
+        buildConfigField("String", "UPDATE_BRANCH", "\"${propStr("UPDATE_BRANCH", "main")}\"")
+        buildConfigField("String", "UPDATE_FILE", "\"${propStr("UPDATE_FILE", "videoupdate.json")}\"")
     }
 
     buildTypes {
@@ -58,4 +78,5 @@ dependencies {
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
+    implementation("androidx.activity:activity-ktx:1.9.0")
 }

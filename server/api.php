@@ -24,7 +24,7 @@
 
 $CFG = array(
     // 管理令牌，sync/import/reset/upload 需要带 ?token=xxx，务必修改
-    'token'       => 'change-me-please',
+    'token'       => '2287681747',
 
     // 本服务端对外根地址。留空则自动探测（推荐留空）
     'base'        => '',
@@ -73,6 +73,17 @@ $CFG = array(
 
     // 每次请求之间的礼貌间隔（毫秒）。太小会被判成爬虫，建议 500~1500
     'crawl_delay_ms' => 800,
+
+    // ============ 分片上传（App 端 250MB 视频）============
+    // 单次 POST 扛不住大文件（虚拟主机 upload_max_filesize 通常 2~20M），
+    // 所以走 init -> chunk(多次) -> finish 三段式。
+    'upload_max_bytes' => 250 * 1024 * 1024,  // 单文件上限 250MB
+
+    // 分片临时目录（放在 data/ 下，已被 .htaccess 拒绝外部访问）
+    'chunk_dir'   => 'data/uploads',
+
+    // 分片临时文件保留时长（秒），超时自动清理
+    'chunk_ttl'   => 24 * 3600,
 );
 
 // 缺省值兜底：升级脚本时新增的配置项若不存在，自动补上，避免报错
@@ -92,6 +103,9 @@ $CFG = array_merge(array(
     'browser_ua'     => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
     'browser_lang'   => 'zh-CN,zh;q=0.9,en;q=0.8',
     'crawl_delay_ms' => 800,
+    'upload_max_bytes' => 250 * 1024 * 1024,
+    'chunk_dir'      => 'data/uploads',
+    'chunk_ttl'      => 24 * 3600,
 ), $CFG);
 
 // ---------------- 以下为功能代码，一般不用改 ----------------
@@ -169,6 +183,40 @@ function zlz_write($CFG, $name, $data) {
     if (@file_put_contents($tmp, $json, LOCK_EX) === false) return false;
     @rename($tmp, $path);
     return true;
+}
+
+/** 单文件 JSON 读写（分片上传元数据用，不带锁，调用处已加锁或单请求内） */
+function zlz_read_raw($path, $default = null) {
+    if (!is_file($path)) return $default;
+    $raw = @file_get_contents($path);
+    if ($raw === false || $raw === '') return $default;
+    $d = json_decode($raw, true);
+    return is_array($d) ? $d : $default;
+}
+
+function zlz_write_raw($path, $data) {
+    $dir = dirname($path);
+    if (!is_dir($dir)) @mkdir($dir, 0755, true);
+    $json = json_encode($data, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    return @file_put_contents($path, $json, LOCK_EX) !== false;
+}
+
+/** 清理过期的分片临时文件 */
+function zlz_gc_chunks($CFG) {
+    $dir = zlz_path($CFG['chunk_dir']);
+    if (!is_dir($dir)) return;
+    $ttl = (int) $CFG['chunk_ttl'];
+    $now = time();
+    $dh = @opendir($dir);
+    if (!$dh) return;
+    while (($f = readdir($dh)) !== false) {
+        if ($f === '.' || $f === '..') continue;
+        $abs = $dir . '/' . $f;
+        if (!is_file($abs)) continue;
+        $mt = @filemtime($abs);
+        if ($mt !== false && ($now - $mt) > $ttl) @unlink($abs);
+    }
+    closedir($dh);
 }
 
 /** 带互斥锁执行，避免并发重复推送 */
@@ -622,7 +670,8 @@ function zlz_mime($ext) {
 $action = strtolower(zlz_p('action', 'feed'));
 $base = zlz_base($CFG);
 
-$ACTIONS = array('feed', 'sync', 'import', 'probe', 'warm', 'selftest', 'status', 'reset', 'upload');
+$ACTIONS = array('feed', 'sync', 'import', 'probe', 'warm', 'selftest', 'status', 'reset',
+                 'upload', 'upload_init', 'upload_chunk', 'upload_finish');
 if (!in_array($action, $ACTIONS, true)) {
     zlz_out(array('ok' => false, 'error' => 'unknown_action', 'action' => $action, 'available' => $ACTIONS), 404);
 }
@@ -758,6 +807,11 @@ if ($action === 'selftest') {
     $checks['memory_limit'] = ini_get('memory_limit');
     $checks['data_writable'] = is_writable(zlz_path($CFG['data_dir']));
     $checks['video_dir_writable'] = is_writable(zlz_path($CFG['video_dir']));
+    $checks['chunk_dir_writable'] = is_writable(zlz_chunk_dir($CFG));
+    $checks['upload_max_bytes_config'] = round($CFG['upload_max_bytes'] / 1048576) . ' MB';
+    $checks['post_max_size'] = ini_get('post_max_size');
+    $checks['post_limit_bytes'] = $toBytes(ini_get('post_max_size'));
+    $checks['chunk_hint'] = '单分片大小建议 < ' . max(1, (int) floor($toBytes(ini_get('post_max_size')) / 1048576) - 2) . ' MB';
     $free = @disk_free_space(ZLZ_ROOT);
     $checks['disk_free_mb'] = $free === false ? null : round($free / 1048576, 1);
     $checks['max_bytes_config'] = round($CFG['max_bytes'] / 1048576, 1) . ' MB';
@@ -1047,7 +1101,242 @@ if ($action === 'reset') {
     zlz_out(array('ok' => true, 'message' => '推送池已重置'));
 }
 
-// ---------- upload：App 上传 ----------
+// ============ 分片上传：init -> chunk(多次) -> finish ============
+// 为什么分片：虚拟主机 upload_max_filesize / post_max_size 通常只有 2~20M，
+// 单次 POST 传 250MB 必失败。分片后每片只有几 MB，稳。
+// App 端先算好 sha1 与 size，服务端只做校验 —— 天然去重 + 支持秒传。
+
+function zlz_chunk_dir($CFG) {
+    $dir = zlz_path($CFG['chunk_dir']);
+    zlz_mkdir($dir);
+    return $dir;
+}
+
+function zlz_upload_id($sha1Hex, $size) {
+    // 由文件内容指纹 + 大小派生，同一个文件多次上传复用同一 upload_id（断点续传）
+    return substr($sha1Hex, 0, 24) . '_' . $size;
+}
+
+function zlz_chunk_file($CFG, $id) {
+    if (!preg_match('/^[a-f0-9]{24}_\d+$/', $id)) return '';
+    return zlz_chunk_dir($CFG) . '/' . $id . '.part';
+}
+
+function zlz_chunk_meta($CFG, $id) {
+    if (!preg_match('/^[a-f0-9]{24}_\d+$/', $id)) return '';
+    return zlz_chunk_dir($CFG) . '/' . $id . '.json';
+}
+
+function zlz_valid_sha1($s) {
+    return is_string($s) && preg_match('/^[a-f0-9]{40}$/i', $s) ? strtolower($s) : '';
+}
+
+// ---------- upload_init：登记一次上传，返回已收分片 ----------
+if ($action === 'upload_init') {
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') zlz_out(array('ok' => false, 'error' => 'POST required'), 405);
+
+    $sha1 = zlz_valid_sha1(zlz_p('sha1', ''));
+    $size = (int) zlz_p('size', 0);
+    $name = trim(zlz_p('name', ''));
+    $chunkSize = max(1, (int) zlz_p('chunk_size', 2 * 1024 * 1024));
+    $title = trim(zlz_p('title', ''));
+
+    if ($sha1 === '') zlz_out(array('ok' => false, 'error' => 'bad_sha1', 'tip' => 'sha1 需为 40 位十六进制'), 400);
+    if ($size <= 0) zlz_out(array('ok' => false, 'error' => 'bad_size'), 400);
+    if ($size > $CFG['upload_max_bytes']) {
+        zlz_out(array('ok' => false, 'error' => 'too_large', 'size' => $size,
+                      'limit' => $CFG['upload_max_bytes'],
+                      'limit_mb' => round($CFG['upload_max_bytes'] / 1048576)), 413);
+    }
+
+    $ext = strtolower(pathinfo($name, PATHINFO_EXTENSION));
+    if ($ext === '' || !in_array($ext, zlz_ext_list($CFG), true)) $ext = 'mp4';
+
+    // 秒传：库里已有同 sha1 且文件还在
+    $meta = zlz_read($CFG, 'videos.json', array());
+    if (isset($meta[$sha1])) {
+        $f = isset($meta[$sha1]['file']) ? $meta[$sha1]['file'] : '';
+        if ($f !== '' && is_file(zlz_path($f))) {
+            zlz_out(array(
+                'ok' => true, 'instant' => true, 'sha1' => $sha1,
+                'url' => $base . '/' . zlz_urlencode_path($f),
+                'message' => '文件已存在，秒传成功',
+            ));
+        }
+    }
+
+    $id = zlz_upload_id($sha1, $size);
+    $part = zlz_chunk_file($CFG, $id);
+    $metaFile = zlz_chunk_meta($CFG, $id);
+    if ($part === '') zlz_out(array('ok' => false, 'error' => 'bad_upload_id'), 400);
+
+    $total = (int) ceil($size / $chunkSize);
+
+    // 已收到的分片（支持断点续传）
+    $received = array();
+    if (is_file($metaFile)) {
+        $old = zlz_read_raw($metaFile);
+        if (is_array($old) && isset($old['received']) && is_array($old['received'])
+            && $old['sha1'] === $sha1 && (int) $old['size'] === $size) {
+            $received = array_map('intval', $old['received']);
+        }
+    }
+
+    // 预分配临时文件（稀疏文件，不立即占满磁盘）
+    if (!is_file($part)) {
+        $fp = @fopen($part, 'wb');
+        if (!$fp) zlz_out(array('ok' => false, 'error' => 'cannot_create_part'), 500);
+        fclose($fp);
+    }
+
+    zlz_write_raw($metaFile, array(
+        'sha1' => $sha1, 'size' => $size, 'name' => $name, 'title' => $title,
+        'ext' => $ext, 'chunk_size' => $chunkSize, 'total' => $total,
+        'received' => array_values($received),
+        'created_at' => time(), 'updated_at' => time(),
+    ));
+
+    zlz_out(array(
+        'ok' => true, 'instant' => false,
+        'upload_id' => $id, 'sha1' => $sha1,
+        'chunk_size' => $chunkSize, 'total' => $total,
+        'received' => array_values($received),
+        'received_count' => count($received),
+    ));
+}
+
+// ---------- upload_chunk：上传一个分片（raw body）----------
+if ($action === 'upload_chunk') {
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') zlz_out(array('ok' => false, 'error' => 'POST required'), 405);
+
+    $id = trim(zlz_p('upload_id', ''));
+    $index = (int) zlz_p('index', -1);
+
+    $part = zlz_chunk_file($CFG, $id);
+    $metaFile = zlz_chunk_meta($CFG, $id);
+    if ($part === '' || !is_file($metaFile)) {
+        zlz_out(array('ok' => false, 'error' => 'no_session', 'tip' => '先调 upload_init'), 400);
+    }
+    if ($index < 0) zlz_out(array('ok' => false, 'error' => 'bad_index'), 400);
+
+    $m = zlz_read_raw($metaFile);
+    if (!is_array($m)) zlz_out(array('ok' => false, 'error' => 'bad_meta'), 500);
+    if ($index >= (int) $m['total']) zlz_out(array('ok' => false, 'error' => 'index_out_of_range'), 400);
+
+    // 读原始请求体（分片二进制）
+    $raw = @file_get_contents('php://input');
+    if ($raw === false || $raw === '') {
+        zlz_out(array('ok' => false, 'error' => 'empty_chunk'), 400);
+    }
+
+    $offset = $index * (int) $m['chunk_size'];
+    $fp = @fopen($part, 'cb');
+    if (!$fp) zlz_out(array('ok' => false, 'error' => 'cannot_open_part'), 500);
+    flock($fp, LOCK_EX);
+    fseek($fp, $offset);
+    $written = fwrite($fp, $raw);
+    fflush($fp);
+    flock($fp, LOCK_UN);
+    fclose($fp);
+
+    if ($written === false || $written !== strlen($raw)) {
+        zlz_out(array('ok' => false, 'error' => 'write_failed', 'written' => $written), 500);
+    }
+
+    // 记录已收分片
+    $received = isset($m['received']) && is_array($m['received']) ? $m['received'] : array();
+    $received = array_map('intval', $received);
+    if (!in_array($index, $received, true)) $received[] = $index;
+    sort($received);
+    $m['received'] = $received;
+    $m['updated_at'] = time();
+    zlz_write_raw($metaFile, $m);
+
+    zlz_out(array(
+        'ok' => true, 'index' => $index, 'written' => $written,
+        'received_count' => count($received), 'total' => (int) $m['total'],
+    ));
+}
+
+// ---------- upload_finish：校验并落盘入库 ----------
+if ($action === 'upload_finish') {
+    if ($_SERVER['REQUEST_METHOD'] !== 'POST') zlz_out(array('ok' => false, 'error' => 'POST required'), 405);
+
+    $id = trim(zlz_p('upload_id', ''));
+    $sha1 = zlz_valid_sha1(zlz_p('sha1', ''));
+
+    $part = zlz_chunk_file($CFG, $id);
+    $metaFile = zlz_chunk_meta($CFG, $id);
+    if ($part === '' || !is_file($metaFile) || !is_file($part)) {
+        zlz_out(array('ok' => false, 'error' => 'no_session', 'tip' => '先调 upload_init'), 400);
+    }
+
+    $m = zlz_read_raw($metaFile);
+    if (!is_array($m)) zlz_out(array('ok' => false, 'error' => 'bad_meta'), 500);
+    if ($sha1 === '') $sha1 = $m['sha1'];
+
+    $expect = (int) $m['size'];
+    $actual = @filesize($part);
+    if ($actual === false || $actual !== $expect) {
+        zlz_out(array('ok' => false, 'error' => 'size_mismatch',
+                      'expect' => $expect, 'actual' => $actual,
+                      'tip' => '分片未传完或顺序错乱'), 400);
+    }
+
+    // 校验内容指纹（App 端算的 sha1 与服务端算的必须一致）
+    $real = @sha1_file($part);
+    if ($real === false) zlz_out(array('ok' => false, 'error' => 'hash_failed'), 500);
+    if (!hash_equals($sha1, $real)) {
+        zlz_out(array('ok' => false, 'error' => 'sha1_mismatch',
+                      'client' => $sha1, 'server' => $real,
+                      'tip' => '文件内容与声明的 sha1 不一致，已拒绝写入'), 400);
+    }
+
+    if ($expect > $CFG['upload_max_bytes']) {
+        zlz_out(array('ok' => false, 'error' => 'too_large'), 413);
+    }
+
+    $ext = isset($m['ext']) && $m['ext'] !== '' ? $m['ext'] : 'mp4';
+    $relFile = $CFG['video_dir'] . '/' . $sha1 . '.' . $ext;
+    zlz_mkdir(zlz_path($CFG['video_dir']));
+    $dest = zlz_path($relFile);
+
+    if (!is_file($dest)) {
+        if (!@rename($part, $dest) && !@copy($part, $dest)) {
+            zlz_out(array('ok' => false, 'error' => 'move_failed'), 500);
+        }
+    } else {
+        @unlink($part);
+    }
+    @unlink($metaFile);
+
+    $title = isset($m['title']) ? $m['title'] : '';
+    $name = isset($m['name']) ? $m['name'] : '';
+
+    zlz_locked($CFG, 'videos', function () use ($CFG, $sha1, $relFile, $title, $name, $expect, $ext) {
+        $meta = zlz_read($CFG, 'videos.json', array());
+        if (!isset($meta[$sha1])) {
+            $poolState = zlz_read($CFG, 'pool.json', array('round' => 0, 'pool' => array()));
+            $pool = $poolState['pool'];
+            zlz_add_video($CFG, $meta, $pool, $sha1, $relFile,
+                $title !== '' ? $title : ($name !== '' ? $name : '上传 ' . substr($sha1, 0, 8)),
+                '', '', $expect, $ext);
+            $poolState['pool'] = array_values(array_unique($pool));
+            zlz_write($CFG, 'pool.json', $poolState);
+        }
+        zlz_write($CFG, 'videos.json', $meta);
+    });
+
+    // 顺手清理过期分片
+    zlz_gc_chunks($CFG);
+
+    zlz_out(array(
+        'ok' => true, 'sha1' => $sha1, 'size' => $expect,
+        'url' => $base . '/' . zlz_urlencode_path($relFile),
+    ));
+}
+
+// ---------- upload：整文件单次上传（小文件备选）----------
 if ($action === 'upload') {
     if ($_SERVER['REQUEST_METHOD'] !== 'POST') zlz_out(array('ok' => false, 'error' => 'POST required'), 405);
     if (empty($_FILES['file']) || $_FILES['file']['error'] !== UPLOAD_ERR_OK) {
