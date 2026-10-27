@@ -8,7 +8,6 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import android.content.Context
 import kotlinx.coroutines.withTimeoutOrNull
-import okhttp3.toHttpUrlOrNull
 import org.json.JSONObject
 import java.io.IOException
 import java.net.URI
@@ -135,6 +134,9 @@ object SessionCookieJar : CookieJar {
 
     private val store = HashMap<String, MutableList<Cookie>>()
 
+    /** WebView 拿到的原始 Cookie 串，按 host 存 */
+    private val rawByHost = HashMap<String, String>()
+
     @Synchronized
     override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
         val bucket = store.getOrPut(url.host) { mutableListOf() }
@@ -154,25 +156,35 @@ object SessionCookieJar : CookieJar {
     @Synchronized
     fun clear() = store.clear()
 
-    /** 把 WebView 拿到的原始 Cookie 串灌进来，让后续 OkHttp 请求复用 */
+    /**
+     * 把 WebView 拿到的原始 Cookie 串灌进来（形如 "a=1; b=2"），
+     * 拦截器会在后续请求里直接带 Cookie 头。
+     *
+     * 这里刻意不用 okhttp3 的 String.toHttpUrlOrNull() / Cookie.parse() ——
+     * 那些是 OkHttp 4.x Kotlin 扩展，部分环境下解析不到，容易编译失败。
+     * 直接存原始字符串最稳。
+     */
     @Synchronized
-    fun putFromRaw(url: String, raw: String) {
-        val httpUrl = url.toHttpUrlOrNull() ?: return
-        val cookies = raw.split(";")
-            .map { it.trim() }
-            .filter { it.isNotBlank() }
-            .mapNotNull { runCatching { Cookie.parse(httpUrl, it) }.getOrNull() }
-        if (cookies.isNotEmpty()) {
-            val bucket = store.getOrPut(httpUrl.host) { mutableListOf() }
-            cookies.forEach { c ->
-                bucket.removeAll { it.name == c.name }
-                if (c.expiresAt > System.currentTimeMillis()) bucket.add(c)
-            }
-        }
+    fun putRaw(host: String, raw: String) {
+        if (host.isBlank() || raw.isBlank()) return
+        rawByHost[host] = raw.trim()
+    }
+
+    @Synchronized
+    fun getRaw(host: String): String = rawByHost[host].orEmpty()
+
+    @Synchronized
+    fun clear() {
+        store.clear()
+        rawByHost.clear()
     }
 }
 
-/** 给每个请求套上浏览器头 */
+/** 取 URL 的 host，解析失败返回空串（用 java.net.URI，不依赖 OkHttp 的 Kotlin 扩展） */
+private fun hostOf(url: String): String =
+    runCatching { java.net.URI(url).host.orEmpty() }.getOrDefault("")
+
+/** 给每个请求套上浏览器头，并带上 WebView 取到的 Cookie */
 class BrowserHeadersInterceptor : Interceptor {
     override fun intercept(chain: Interceptor.Chain): okhttp3.Response {
         val req = chain.request()
@@ -180,6 +192,12 @@ class BrowserHeadersInterceptor : Interceptor {
             Browser.headers(req.url.toString()).forEach { (k, v) ->
                 // 已存在的头不覆盖
                 if (req.header(k) == null) header(k, v)
+            }
+            // WebView 过验证后拿到的 Cookie，直接作为请求头带上
+            val host = hostOf(req.url.toString())
+            if (host.isNotBlank() && req.header("Cookie") == null) {
+                val raw = SessionCookieJar.getRaw(host)
+                if (raw.isNotBlank()) header("Cookie", raw)
             }
         }.build()
         return chain.proceed(built)
@@ -272,7 +290,7 @@ object Api {
         }.orEmpty()
 
         if (rawCookie.isNotBlank()) {
-            SessionCookieJar.putFromRaw(origin + "/", rawCookie)
+            SessionCookieJar.putRaw(hostOf(origin), rawCookie)
             val second = feed(endpoint, count)
             if (second.ok) return second
             // ---- 3) WebView 内 JS fetch ----
