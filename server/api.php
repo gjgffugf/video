@@ -24,7 +24,7 @@
 
 $CFG = array(
     // 管理令牌，sync/import/reset/upload 需要带 ?token=xxx，务必修改
-    'token'       => '2287681747',
+    'token'       => 'change-me-please',
 
     // 本服务端对外根地址。留空则自动探测（推荐留空）
     'base'        => '',

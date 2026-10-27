@@ -6,9 +6,10 @@ import android.provider.OpenableColumns
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.FormBody
-import okhttp3.MediaType
+import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.Request
 import okhttp3.RequestBody
+import okhttp3.RequestBody.Companion.toRequestBody
 import org.json.JSONObject
 import java.io.File
 import java.io.FileInputStream
@@ -39,6 +40,8 @@ const val MAX_UPLOAD_BYTES = 250L * 1024 * 1024
 
 /** 单分片大小 2MB —— 虚拟主机 post_max_size 通常 2~20M，2MB 最稳 */
 const val CHUNK_SIZE = 2 * 1024 * 1024
+
+private val OCTET_STREAM = "application/octet-stream".toMediaType()
 
 object Uploader {
 
@@ -86,7 +89,11 @@ object Uploader {
      * 流式算 SHA-1 —— 250MB 文件不能一次读进内存，
      * 所以分块喂给 MessageDigest。
      */
-    suspend fun sha1Of(context: Context, uri: Uri, onProgress: (Long) -> Unit = {}): String =
+    suspend fun sha1Of(
+        context: Context,
+        uri: Uri,
+        onProgress: suspend (Long) -> Unit = {}
+    ): String =
         withContext(Dispatchers.IO) {
             val md = MessageDigest.getInstance("SHA-1")
             val buf = ByteArray(1 shl 20) // 1MB
@@ -224,9 +231,9 @@ object Uploader {
                     if (off <= 0) break
 
                     val chunk = if (off == CHUNK_SIZE) buf else buf.copyOf(off)
-                    val body = RequestBody.create(
-                        MediaType.parse("application/octet-stream"), chunk
-                    )
+                    // OkHttp 4.x：MediaType.parse() / RequestBody.create() 都是
+                    // ERROR 级废弃，已改为 Kotlin 扩展函数，必须用下面这种写法
+                    val body = chunk.toRequestBody(OCTET_STREAM)
                     val r = post(
                         endpoint + "?action=upload_chunk&upload_id=" + uploadId + "&index=" + index,
                         body

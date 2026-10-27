@@ -131,11 +131,17 @@ object Updater {
         if (out.exists()) out.delete()
 
         for (url in downloadUrls(info.apkUrl)) {
-            val ok = runCatching {
+            // 注意：这里不能用 runCatching { downloadOne(...) } ——
+            // runCatching 的 lambda 不是 suspend，里面调不了 suspend 函数。
+            // 改用 try/catch。
+            val ok = try {
                 downloadOne(url, out, info.size) { p ->
                     withContext(Dispatchers.Main) { onProgress(p) }
                 }
-            }.getOrDefault(false)
+            } catch (e: Exception) {
+                Log.d(TAG, "下载异常: ${e.message}")
+                false
+            }
             if (ok && out.exists() && out.length() > 0) return@withContext out
             Log.d(TAG, "下载失败: $url")
             if (out.exists()) out.delete()
@@ -143,11 +149,11 @@ object Updater {
         null
     }
 
-    private fun downloadOne(
+    private suspend fun downloadOne(
         url: String,
         out: File,
         declaredSize: Long,
-        onProgress: (DownloadProgress) -> Unit
+        onProgress: suspend (DownloadProgress) -> Unit
     ): Boolean {
         val req = Request.Builder()
             .url(url)
@@ -155,25 +161,29 @@ object Updater {
             .get()
             .build()
 
+        var ok = false
         Api.httpClient.newCall(req).execute().use { resp ->
-            if (!resp.isSuccessful) return false
-            val body = resp.body ?: return false
-            val total = if (declaredSize > 0) declaredSize else body.contentLength()
-
-            FileOutputStream(out).use { fos ->
-                val buf = ByteArray(1 shl 16)
-                var sum = 0L
-                while (true) {
-                    val n = body.byteStream().read(buf)
-                    if (n <= 0) break
-                    fos.write(buf, 0, n)
-                    sum += n
-                    onProgress(DownloadProgress(sum, total))
+            if (resp.isSuccessful) {
+                val body = resp.body
+                if (body != null) {
+                    val total = if (declaredSize > 0) declaredSize else body.contentLength()
+                    FileOutputStream(out).use { fos ->
+                        val buf = ByteArray(1 shl 16)
+                        var sum = 0L
+                        while (true) {
+                            val n = body.byteStream().read(buf)
+                            if (n <= 0) break
+                            fos.write(buf, 0, n)
+                            sum += n
+                            onProgress(DownloadProgress(sum, total))
+                        }
+                        fos.flush()
+                    }
+                    ok = out.length() > 0
                 }
-                fos.flush()
             }
-            return out.length() > 0
         }
+        return ok
     }
 
     /** 调起系统安装界面 */
