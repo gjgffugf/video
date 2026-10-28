@@ -58,14 +58,9 @@ class HomeFragment : Fragment() {
 
         pager.registerOnPageChangeCallback(object : ViewPager2.OnPageChangeCallback() {
             override fun onPageSelected(position: Int) {
+                // 刷新直链 + 预缓存下一个都在 adapter.setActive 里做了
+                // （ViewPager2 没有 findViewHolderForAdapterPosition 这个公开方法）
                 adapter.setActive(position)
-                // 滑到下一个时刷新该视频的最新直链
-                (pager.findViewHolderForAdapterPosition(position) as? FeedAdapter.VH)?.refreshUrl()
-                // 提前缓存下一个
-                val next = position + 1
-                if (next < adapter.size) {
-                    (pager.findViewHolderForAdapterPosition(next) as? FeedAdapter.VH)?.refreshUrl()
-                }
                 if (position >= adapter.size - PREFETCH) loadMore()
             }
         })

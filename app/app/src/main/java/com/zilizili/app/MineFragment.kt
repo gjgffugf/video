@@ -193,34 +193,36 @@ class MineFragment : Fragment() {
         override fun onBindViewHolder(h: WH, p: Int) { h.bind(works[p]) }
         override fun getItemCount(): Int = works.size
 
+        // 注意：bind 的参数不能叫 it —— 下面点击/长按的 lambda 自带隐式 it（View），
+        // 同名会遮蔽外层参数，导致 it.title 之类解析失败。这里显式用 item。
         inner class WH(v: View) : RecyclerView.ViewHolder(v) {
             private val thumb: ImageView = v.findViewById(R.id.ivThumb)
-            private val title: TextView = v.findViewById(R.id.tvTitle)
-            private val like: TextView = v.findViewById(R.id.tvLike)
+            private val tvTitle: TextView = v.findViewById(R.id.tvTitle)
+            private val tvLike: TextView = v.findViewById(R.id.tvLike)
 
-            fun bind(it: VideoItem) {
-                title.text = it.title
-                like.text = "♥ ${it.likes}"
-                if (it.cover.isNotBlank()) thumb.load(it.cover) else thumb.load(it.url)
+            fun bind(item: VideoItem) {
+                tvTitle.text = item.title
+                tvLike.text = "\u2665 ${item.likes}"
+                if (item.cover.isNotBlank()) thumb.load(item.cover) else thumb.load(item.url)
 
-                itemView.setOnLongClickListener {
+                itemView.setOnLongClickListener { _ ->
                     val opts = arrayOf("删除作品", "修改简介", "修改封面")
                     AlertDialog.Builder(requireContext())
-                        .setTitle(it.title)
+                        .setTitle(item.title)
                         .setItems(opts) { _, w ->
                             when (w) {
-                                0 -> confirmDelete(it)
-                                1 -> showEditWorkIntro(it)
-                                2 -> { pendingCoverSha1 = it.sha1; pickCover.launch("image/*") }
+                                0 -> confirmDelete(item)
+                                1 -> showEditWorkIntro(item)
+                                2 -> { pendingCoverSha1 = item.sha1; pickCover.launch("image/*") }
                             }
                         }
                         .show()
                     true
                 }
 
-                itemView.setOnClickListener {
+                itemView.setOnClickListener { _ ->
                     startActivity(Intent(requireContext(), UserSpaceActivity::class.java)
-                        .putExtra("uid", it.authorId))
+                        .putExtra("uid", item.authorId))
                 }
             }
         }

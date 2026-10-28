@@ -22,9 +22,9 @@ import java.util.concurrent.TimeUnit
 data class VideoItem(
     val sha1: String,
     val title: String,
-    val intro: String,
-    val url: String,
-    val cover: String,
+    var intro: String,
+    var url: String,
+    var cover: String,
     val size: Long,
     val mime: String,
     val authorId: String,

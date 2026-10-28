@@ -74,9 +74,29 @@ class FeedAdapter(
         val old = activePos
         activePos = pos
         if (old >= 0) notifyItemChanged(old, PAYLOAD_ACTIVE)
-        if (pos >= 0) notifyItemChanged(pos, PAYLOAD_ACTIVE)
-        // 提前请求下一批
+        if (pos >= 0) {
+            notifyItemChanged(pos, PAYLOAD_ACTIVE)
+            // 滑到这一页时刷新该视频的最新直链
+            refreshUrlAt(pos)
+            // 提前缓存下一个
+            if (pos + 1 < items.size) refreshUrlAt(pos + 1)
+        }
+        // 剩余不足时请求下一批
         if (pos >= items.size - 2) onPrefetch(pos)
+    }
+
+    /** 取最新直链并更新本地数据（播放中不会被打断） */
+    private fun refreshUrlAt(pos: Int) {
+        val it = items.getOrNull(pos) ?: return
+        scope.launch {
+            val fresh = withContext(Dispatchers.IO) { Api.videoInfo(it.sha1) }
+                ?: return@launch
+            if (fresh.url.isBlank()) return@launch
+            it.url = fresh.url
+            it.likes = fresh.likes
+            it.commentCount = fresh.commentCount
+            it.intro = fresh.intro.ifBlank { it.intro }
+        }
     }
 
     fun pauseAll() { for (i in 0 until items.size) {} }
@@ -138,39 +158,39 @@ class FeedAdapter(
             // 作者头像/名字 -> 用户空间
             val uid = item.authorId
             if (uid.isNotBlank()) {
-                ivAvatar.setOnClickListener { onOpenUser(uid) }
-                ivAuthorAvatar.setOnClickListener { onOpenUser(uid) }
-                tvAuthor.setOnClickListener { onOpenUser(uid) }
+                ivAvatar.setOnClickListener { _ -> onOpenUser(uid) }
+                ivAuthorAvatar.setOnClickListener { _ -> onOpenUser(uid) }
+                tvAuthor.setOnClickListener { _ -> onOpenUser(uid) }
             }
 
             // 点赞
-            btnLike.setOnClickListener {
+            btnLike.setOnClickListener { _ ->
                 if (!Session.isLogin()) { onNeedLogin(); return@setOnClickListener }
-                val it = bound ?: return@setOnClickListener
-                val nowLiked = !likedSet.contains(it.sha1)
-                likedSet.apply { if (nowLiked) add(it.sha1) else remove(it.sha1) }
+                val cur = bound ?: return@setOnClickListener
+                val nowLiked = !likedSet.contains(cur.sha1)
+                // 先本地即时反馈
+                if (nowLiked) likedSet.add(cur.sha1) else likedSet.remove(cur.sha1)
                 tvLikeIcon.setTextColor(if (nowLiked) 0xFFFF3B5C.toInt() else 0xFFFFFFFF.toInt())
-                tvLikeCount.text = ((it.likes + if (nowLiked) 1 else -1).coerceAtLeast(0)).toString()
+                tvLikeCount.text = ((cur.likes + if (nowLiked) 1 else -1).coerceAtLeast(0)).toString()
                 scope.launch {
-                    val (ok, n) = Api.like(it.sha1, it.authorId)
+                    val (ok, n) = Api.like(cur.sha1, cur.authorId)
                     if (ok) {
-                        it.likes = n
-                        likedSet.apply { if (n > it.likes) remove(it.sha1) }
+                        cur.likes = n
                         tvLikeCount.text = n.toString()
                     } else {
-                        // 回滚
-                        likedSet.apply { if (nowLiked) remove(it.sha1) else add(it.sha1) }
+                        // 失败回滚
+                        if (nowLiked) likedSet.remove(cur.sha1) else likedSet.add(cur.sha1)
                         tvLikeIcon.setTextColor(if (nowLiked) 0xFFFFFFFF.toInt() else 0xFFFF3B5C.toInt())
-                        tvLikeCount.text = it.likes.toString()
+                        tvLikeCount.text = cur.likes.toString()
                     }
                 }
             }
 
             // 评论
-            btnComment.setOnClickListener { onOpenComments(item) }
+            btnComment.setOnClickListener { _ -> onOpenComments(item) }
 
             // 分享 = 复制链接
-            btnShare.setOnClickListener {
+            btnShare.setOnClickListener { _ ->
                 val link = Api.shareLink(item)
                 val cm = itemView.context.getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
                 cm.setPrimaryClip(ClipData.newPlainText("zilizili", link))

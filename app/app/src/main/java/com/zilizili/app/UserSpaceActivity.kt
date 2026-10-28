@@ -37,7 +37,7 @@ class UserSpaceActivity : AppCompatActivity() {
         tvEmpty = findViewById(R.id.tvEmpty)
 
         rv.layoutManager = GridLayoutManager(this, 3)
-        rv.adapter = Adapter()
+        rv.adapter = WorksAdapter()
 
         val uid = intent.getStringExtra("uid").orEmpty()
         if (uid.isBlank()) { Toast.makeText(this, "缺少用户", Toast.LENGTH_SHORT).show(); finish(); return }
@@ -61,7 +61,7 @@ class UserSpaceActivity : AppCompatActivity() {
         }
     }
 
-    private inner class Adapter : RecyclerView.Adapter<Adapter.H>() {
+    private inner class WorksAdapter : RecyclerView.Adapter<WorksAdapter.H>() {
         override fun onCreateViewHolder(parent: android.view.ViewGroup, viewType: Int): H {
             val v = layoutInflater.inflate(R.layout.item_work_grid, parent, false)
             return H(v)
@@ -69,19 +69,21 @@ class UserSpaceActivity : AppCompatActivity() {
         override fun onBindViewHolder(h: H, p: Int) { h.bind(items[p]) }
         override fun getItemCount(): Int = items.size
 
+        // bind 的参数显式叫 item：点击 lambda 自带隐式 it（View），同名会被遮蔽
         inner class H(v: View) : RecyclerView.ViewHolder(v) {
             private val thumb: ImageView = v.findViewById(R.id.ivThumb)
-            private val title: TextView = v.findViewById(R.id.tvTitle)
-            private val like: TextView = v.findViewById(R.id.tvLike)
-            fun bind(it: VideoItem) {
-                title.text = it.title
-                like.text = "♥ ${it.likes}"
-                if (it.cover.isNotBlank()) thumb.load(it.cover) else thumb.load(it.url)
-                itemView.setOnClickListener {
-                    val link = Api.shareLink(it)
-                    Toast.makeText(this@UserSpaceActivity, "预览链接已复制", Toast.LENGTH_SHORT).show()
+            private val tvTitle: TextView = v.findViewById(R.id.tvTitle)
+            private val tvLike: TextView = v.findViewById(R.id.tvLike)
+
+            fun bind(item: VideoItem) {
+                tvTitle.text = item.title
+                tvLike.text = "\u2665 ${item.likes}"
+                if (item.cover.isNotBlank()) thumb.load(item.cover) else thumb.load(item.url)
+                itemView.setOnClickListener { _ ->
+                    val link = Api.shareLink(item)
                     val cm = getSystemService(CLIPBOARD_SERVICE) as android.content.ClipboardManager
                     cm.setPrimaryClip(android.content.ClipData.newPlainText("zilizili", link))
+                    Toast.makeText(this@UserSpaceActivity, "预览链接已复制", Toast.LENGTH_SHORT).show()
                 }
             }
         }
