@@ -1,0 +1,125 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@android:color/black"
+    android:orientation="vertical">
+
+    <!-- 顶部标题栏 -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="16dp"
+        android:paddingTop="12dp"
+        android:paddingEnd="12dp"
+        android:paddingBottom="10dp">
+
+        <TextView
+            android:id="@+id/tvCommentTitle"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="评论"
+            android:textColor="#FFFFFF"
+            android:textSize="15sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="12dp"
+            android:text="♥"
+            android:textColor="#FF3B5C"
+            android:textSize="16sp" />
+
+        <TextView
+            android:id="@+id/tvSheetLikeCount"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginEnd="14dp"
+            android:text="0"
+            android:textColor="#DDDDDD"
+            android:textSize="13sp" />
+
+        <ImageView
+            android:id="@+id/btnClose"
+            android:layout_width="28dp"
+            android:layout_height="28dp"
+            android:contentDescription="关闭"
+            android:src="@android:drawable/ic_menu_close_clear_cancel" />
+
+    </LinearLayout>
+
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="#FF232328" />
+
+    <!-- 评论列表：可滑动 -->
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/commentList"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:overScrollMode="always"
+        android:paddingStart="14dp"
+        android:paddingEnd="14dp"
+        android:paddingTop="8dp" />
+
+    <TextView
+        android:id="@+id/tvEmpty"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:gravity="center"
+        android:text="还没有评论，来说两句吧"
+        android:textColor="#777777"
+        android:textSize="13sp"
+        android:visibility="gone" />
+
+    <!-- 输入区（评论区不套用蓝色边框按钮样式） -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:background="#FF111114"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="12dp"
+        android:paddingTop="10dp"
+        android:paddingEnd="12dp"
+        android:paddingBottom="14dp">
+
+        <EditText
+            android:id="@+id/etComment"
+            android:layout_width="0dp"
+            android:layout_height="40dp"
+            android:layout_weight="1"
+            android:background="@drawable/bg_comment_input"
+            android:hint="说点什么…"
+            android:imeOptions="actionSend"
+            android:inputType="text"
+            android:maxLines="1"
+            android:paddingStart="14dp"
+            android:paddingEnd="14dp"
+            android:textColor="#FFFFFF"
+            android:textColorHint="#777777"
+            android:textSize="13sp" />
+
+        <TextView
+            android:id="@+id/btnSend"
+            android:layout_width="wrap_content"
+            android:layout_height="40dp"
+            android:layout_marginStart="8dp"
+            android:background="@drawable/bg_comment_input"
+            android:gravity="center"
+            android:paddingStart="16dp"
+            android:paddingEnd="16dp"
+            android:text="发送"
+            android:textColor="#FF2F7BFF"
+            android:textSize="13sp" />
+
+    </LinearLayout>
+
+</LinearLayout>

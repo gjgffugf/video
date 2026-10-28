@@ -4,13 +4,14 @@
     <uses-permission android:name="android.permission.INTERNET" />
     <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
 
-    <!-- 读取相册里的视频 -->
+    <!-- 读取相册里的视频 / 图片 -->
     <uses-permission android:name="android.permission.READ_MEDIA_VIDEO" />
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES" />
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32" />
 
-    <!-- 应用内安装 APK（Android 8+ 需要） -->
+    <!-- 应用内安装 APK -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
 
     <application
@@ -24,24 +25,46 @@
 
         <activity
             android:name=".MainActivity"
-            android:exported="true"
             android:configChanges="orientation|screenSize|keyboardHidden|screenLayout|smallestScreenSize"
+            android:exported="true"
+            android:launchMode="singleTop"
             android:screenOrientation="portrait"
             android:theme="@style/Theme.Zilizili">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
+
+            <!-- 分享页 play.php 用来唤起 App：zilizili://play?... -->
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="zilizili" android:host="play" />
+            </intent-filter>
         </activity>
 
         <activity
-            android:name=".UploadActivity"
+            android:name=".LoginActivity"
             android:exported="false"
-            android:label="上传视频"
+            android:label="登录"
             android:screenOrientation="portrait"
             android:theme="@style/Theme.Zilizili" />
 
-        <!-- 安装 APK 需要 FileProvider（Android 7+ 禁止暴露 file:// URI） -->
+        <activity
+            android:name=".RegisterActivity"
+            android:exported="false"
+            android:label="注册"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.Zilizili" />
+
+        <activity
+            android:name=".UserSpaceActivity"
+            android:exported="false"
+            android:label="用户空间"
+            android:screenOrientation="portrait"
+            android:theme="@style/Theme.Zilizili" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.fileprovider"

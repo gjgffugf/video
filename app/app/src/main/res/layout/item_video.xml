@@ -1,6 +1,5 @@
 <?xml version="1.0" encoding="utf-8"?>
 <FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
-    xmlns:app="http://schemas.android.com/apk/res-auto"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:background="@android:color/black">
@@ -9,23 +8,44 @@
         android:id="@+id/playerView"
         android:layout_width="match_parent"
         android:layout_height="match_parent"
-        android:layout_gravity="center"
-        app:resize_mode="fit"
-        app:surface_type="surface_view"
+        android:background="@android:color/black"
         app:use_controller="false"
-        app:show_buffering="always" />
+        app:resize_mode="fit"
+        app:surface_type="texture_view"
+        xmlns:app="http://schemas.android.com/apk/res-auto" />
 
-    <!-- 顶部渐变遮罩 -->
-    <View
+    <!-- 封面：加载完成前显示 -->
+    <ImageView
+        android:id="@+id/coverView"
         android:layout_width="match_parent"
-        android:layout_height="120dp"
-        android:background="@drawable/bg_top_gradient" />
+        android:layout_height="match_parent"
+        android:scaleType="centerCrop"
+        android:visibility="gone" />
 
-    <View
-        android:layout_width="match_parent"
-        android:layout_height="200dp"
-        android:layout_gravity="bottom"
-        android:background="@drawable/bg_bottom_gradient" />
+    <!-- 卡顿提示 -->
+    <LinearLayout
+        android:id="@+id/bufferingBox"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="center"
+        android:gravity="center"
+        android:orientation="vertical"
+        android:visibility="gone">
+
+        <ProgressBar
+            android:id="@+id/bufferingSpin"
+            android:layout_width="40dp"
+            android:layout_height="40dp" />
+
+        <TextView
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:text="正在链接服务器…"
+            android:textColor="#DDDDDD"
+            android:textSize="12sp" />
+
+    </LinearLayout>
 
     <!-- 底部信息区 -->
     <LinearLayout
@@ -33,89 +53,197 @@
         android:layout_height="wrap_content"
         android:layout_gravity="bottom"
         android:orientation="vertical"
-        android:paddingStart="16dp"
-        android:paddingEnd="80dp"
-        android:paddingBottom="28dp">
+        android:paddingStart="14dp"
+        android:paddingEnd="14dp"
+        android:paddingBottom="18dp">
 
+        <!-- 发布日期：进度条上方 -->
         <TextView
-            android:id="@+id/title"
+            android:id="@+id/tvDate"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
+            android:layout_marginBottom="6dp"
+            android:shadowColor="#80000000"
+            android:shadowRadius="4"
+            android:textColor="#CCCCCC"
+            android:textSize="11sp" />
+
+        <!-- 可拖动进度条 -->
+        <SeekBar
+            android:id="@+id/seekBar"
+            android:layout_width="match_parent"
+            android:layout_height="24dp"
+            android:max="1000"
+            android:progress="0"
+            android:thumbTint="#FFFFFF"
+            android:progressTint="#FFFFFF"
+            android:progressBackgroundTint="#55FFFFFF" />
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:orientation="horizontal">
+
+            <TextView
+                android:id="@+id/tvPos"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="00:00"
+                android:textColor="#CCCCCC"
+                android:textSize="11sp" />
+
+            <View
+                android:layout_width="0dp"
+                android:layout_height="1dp"
+                android:layout_weight="1" />
+
+            <TextView
+                android:id="@+id/tvDur"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="00:00"
+                android:textColor="#CCCCCC"
+                android:textSize="11sp" />
+
+        </LinearLayout>
+
+        <!-- 作者行：头像 + @用户名 -->
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
+
+            <ImageView
+                android:id="@+id/ivAvatar"
+                android:layout_width="36dp"
+                android:layout_height="36dp"
+                android:background="@drawable/bg_bottom_gradient"
+                android:scaleType="centerCrop"
+                android:src="@drawable/ic_launcher" />
+
+            <TextView
+                android:id="@+id/tvAuthor"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
+                android:shadowColor="#80000000"
+                android:shadowRadius="4"
+                android:text="@string/placeholder_author"
+                android:textColor="#FFFFFF"
+                android:textSize="15sp"
+                android:textStyle="bold" />
+
+        </LinearLayout>
+
+        <!-- 视频简介（原"编号"位置） -->
+        <TextView
+            android:id="@+id/tvIntro"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="6dp"
             android:ellipsize="end"
             android:maxLines="2"
             android:shadowColor="#80000000"
-            android:shadowDx="0"
-            android:shadowDy="1"
-            android:shadowRadius="3"
-            android:textColor="#FFFFFF"
-            android:textSize="16sp"
-            android:textStyle="bold" />
-
-        <TextView
-            android:id="@+id/meta"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="6dp"
-            android:shadowColor="#80000000"
-            android:shadowRadius="3"
-            android:textColor="#DDDDDD"
-            android:textSize="12sp" />
+            android:shadowRadius="4"
+            android:textColor="#EEEEEE"
+            android:textSize="13sp" />
 
     </LinearLayout>
 
-    <!-- 右侧互动栏 -->
+    <!-- 右侧互动栏：头像在上，点赞，评论，分享 -->
     <LinearLayout
         android:layout_width="wrap_content"
         android:layout_height="wrap_content"
-        android:layout_gravity="bottom|end"
-        android:orientation="vertical"
-        android:paddingEnd="14dp"
-        android:paddingBottom="28dp">
+        android:layout_gravity="end|bottom"
+        android:layout_marginEnd="10dp"
+        android:layout_marginBottom="110dp"
+        android:gravity="center_horizontal"
+        android:orientation="vertical">
 
-        <TextView
+        <ImageView
+            android:id="@+id/ivAuthorAvatar"
+            android:layout_width="44dp"
+            android:layout_height="44dp"
+            android:scaleType="centerCrop"
+            android:src="@drawable/ic_launcher" />
+
+        <LinearLayout
             android:id="@+id/btnLike"
-            android:layout_width="52dp"
-            android:layout_height="52dp"
-            android:gravity="center"
-            android:text="♥"
-            android:textColor="#FFFFFF"
-            android:textSize="24sp" />
-
-        <TextView
-            android:id="@+id/likeCount"
-            android:layout_width="52dp"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:gravity="center"
-            android:textColor="#FFFFFF"
-            android:textSize="12sp" />
+            android:layout_marginTop="14dp"
+            android:gravity="center_horizontal"
+            android:orientation="vertical">
 
-        <TextView
+            <TextView
+                android:id="@+id/tvLikeIcon"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="♥"
+                android:textColor="#FFFFFF"
+                android:textSize="28sp" />
+
+            <TextView
+                android:id="@+id/tvLikeCount"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="0"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp" />
+
+        </LinearLayout>
+
+        <LinearLayout
             android:id="@+id/btnComment"
-            android:layout_width="52dp"
-            android:layout_height="52dp"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
             android:layout_marginTop="14dp"
-            android:gravity="center"
-            android:text="💬"
-            android:textSize="22sp" />
+            android:gravity="center_horizontal"
+            android:orientation="vertical">
 
-        <TextView
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="💬"
+                android:textSize="26sp" />
+
+            <TextView
+                android:id="@+id/tvCommentCount"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="0"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp" />
+
+        </LinearLayout>
+
+        <LinearLayout
             android:id="@+id/btnShare"
-            android:layout_width="52dp"
-            android:layout_height="52dp"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
             android:layout_marginTop="14dp"
-            android:gravity="center"
-            android:text="↗"
-            android:textColor="#FFFFFF"
-            android:textSize="22sp" />
+            android:gravity="center_horizontal"
+            android:orientation="vertical">
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="↗"
+                android:textColor="#FFFFFF"
+                android:textSize="26sp" />
+
+            <TextView
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="分享"
+                android:textColor="#FFFFFF"
+                android:textSize="12sp" />
+
+        </LinearLayout>
 
     </LinearLayout>
-
-    <!-- 缓冲 / 失败提示 -->
-    <ProgressBar
-        android:id="@+id/itemLoading"
-        android:layout_width="40dp"
-        android:layout_height="40dp"
-        android:layout_gravity="center"
-        android:visibility="gone" />
 
 </FrameLayout>

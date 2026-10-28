@@ -1,40 +1,58 @@
 <?xml version="1.0" encoding="utf-8"?>
-<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
-    android:background="@android:color/black">
+    android:background="@android:color/black"
+    android:orientation="vertical">
 
-    <androidx.viewpager2.widget.ViewPager2
-        android:id="@+id/pager"
+    <FrameLayout
+        android:id="@+id/container"
         android:layout_width="match_parent"
-        android:layout_height="match_parent"
-        android:orientation="vertical" />
+        android:layout_height="0dp"
+        android:layout_weight="1" />
 
-    <ProgressBar
-        android:id="@+id/loading"
-        android:layout_width="48dp"
-        android:layout_height="48dp"
-        android:layout_gravity="center"
-        android:visibility="gone" />
+    <View
+        android:layout_width="match_parent"
+        android:layout_height="1dp"
+        android:background="#FF232328" />
 
-    <TextView
-        android:id="@+id/empty"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="center"
-        android:gravity="center"
-        android:padding="24dp"
-        android:textColor="#BBBBBB"
-        android:textSize="14sp"
-        android:visibility="gone" />
+    <!-- 底部栏目：首页 / 上传 / 我的 -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="52dp"
+        android:background="#FF0B0B0F"
+        android:orientation="horizontal">
 
-    <Button
-        android:id="@+id/btnUploadEntry"
-        android:layout_width="wrap_content"
-        android:layout_height="wrap_content"
-        android:layout_gravity="bottom|end"
-        android:layout_margin="16dp"
-        android:alpha="0.92"
-        android:text="上传" />
+        <TextView
+            android:id="@+id/tabHome"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:text="@string/tab_home"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp" />
 
-</FrameLayout>
+        <TextView
+            android:id="@+id/tabUpload"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:text="@string/tab_upload"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp" />
+
+        <TextView
+            android:id="@+id/tabMine"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:gravity="center"
+            android:text="@string/tab_mine"
+            android:textColor="#FFFFFF"
+            android:textSize="14sp" />
+
+    </LinearLayout>
+
+</LinearLayout>

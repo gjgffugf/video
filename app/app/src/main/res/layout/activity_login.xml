@@ -1,0 +1,93 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="#FF101014"
+    android:orientation="vertical"
+    android:padding="24dp">
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="登录 zilizili"
+        android:textColor="#FFFFFF"
+        android:textSize="22sp"
+        android:textStyle="bold" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:text="可用 6 位 ID 或用户名登录"
+        android:textColor="#888888"
+        android:textSize="12sp" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
+        android:text="账号"
+        android:textColor="#AAAAAA"
+        android:textSize="12sp" />
+
+    <EditText
+        android:id="@+id/etAccount"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:background="@drawable/bg_edit_dark"
+        android:hint="ID 或用户名"
+        android:inputType="text"
+        android:padding="12dp"
+        android:textColor="#FFFFFF"
+        android:textColorHint="#777777"
+        android:textSize="13sp" />
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="14dp"
+        android:text="密码"
+        android:textColor="#AAAAAA"
+        android:textSize="12sp" />
+
+    <EditText
+        android:id="@+id/etPassword"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:background="@drawable/bg_edit_dark"
+        android:hint="密码"
+        android:inputType="textPassword"
+        android:padding="12dp"
+        android:textColor="#FFFFFF"
+        android:textColorHint="#777777"
+        android:textSize="13sp" />
+
+    <Button
+        android:id="@+id/btnLogin"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="22dp"
+        android:background="@drawable/bg_btn_outline"
+        android:text="登录"
+        android:textColor="#FFFFFF" />
+
+    <Button
+        android:id="@+id/btnGoRegister"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="10dp"
+        android:background="@drawable/bg_btn_outline"
+        android:text="没有账号？去注册"
+        android:textColor="#FFFFFF" />
+
+    <TextView
+        android:id="@+id/tvMsg"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="16dp"
+        android:textColor="#FFEF5350"
+        android:textSize="13sp" />
+
+</LinearLayout>
