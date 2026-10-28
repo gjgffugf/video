@@ -39,6 +39,9 @@ class MainActivity : AppCompatActivity(), HomeHost {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
+        // 初始化 Api：让它拿到 Application 上下文，
+        // 被主机的人机验证拦截时能启动 WebView 浏览器会话
+        Api.init(this)
         Session.load(this)
 
         tabHome = findViewById(R.id.tabHome)

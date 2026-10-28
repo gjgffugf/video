@@ -144,6 +144,10 @@ object Uploader {
                     error = "文件 %.1f MB 超过上限 %d MB".format(size / 1048576.0, MAX_UPLOAD_BYTES / 1048576))
             }
 
+            // 上传前先确保浏览器会话 Cookie 就绪，
+            // 否则大文件会被主机的人机验证页拦下来（拿到的是 HTML 不是 JSON）
+            Api.ensureSession()
+
             emit("hashing", 0, size)
             val sha1 = sha1Of(ctx, uri)
             emit("preparing", 0, size)
@@ -208,6 +212,10 @@ object Uploader {
 
             emit("finishing", size, size)
             if (raw.isBlank()) return@withContext UploadResult(false, error = "服务端无响应")
+            if (Api.looksHtml(raw)) {
+                return@withContext UploadResult(false,
+                    error = "服务端返回网页不是 JSON（被主机人机验证拦截）")
+            }
 
             val j = JSONObject(raw)
             if (!j.optBoolean("ok", false)) {

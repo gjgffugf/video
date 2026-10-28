@@ -22,6 +22,7 @@ class RegisterActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_register)
 
+        Api.init(this)
         etName = findViewById(R.id.etName)
         etPw = findViewById(R.id.etPw)
         etPw2 = findViewById(R.id.etPw2)
