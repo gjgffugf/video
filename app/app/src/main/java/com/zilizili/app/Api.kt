@@ -6,6 +6,7 @@ import android.webkit.CookieManager
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.FormBody
+import okhttp3.Interceptor
 import okhttp3.MediaType
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.MultipartBody
@@ -13,6 +14,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
 import org.json.JSONObject
 import java.io.IOException
 import java.util.concurrent.TimeUnit
@@ -191,7 +193,7 @@ object Api {
      * 都能自动带上验证 Cookie，不必每次都走 WebView。
      */
     private class BrowserCookieInterceptor : Interceptor {
-        override fun intercept(chain: Interceptor.Chain): okhttp3.Response {
+        override fun intercept(chain: Interceptor.Chain): Response {
             val req = chain.request()
             val b = req.newBuilder()
             Browser.headers().forEach { (k, v) -> if (req.header(k) == null) b.header(k, v) }
@@ -238,7 +240,7 @@ object Api {
         }
     } catch (e: Exception) { null }
 
-    private fun rawPost(url: String, body: okhttp3.RequestBody): String? = try {
+    private fun rawPost(url: String, body: RequestBody): String? = try {
         httpClient.newCall(Request.Builder().url(url).post(body).build()).execute().use { r ->
             val s = r.body?.string().orEmpty()
             if (!r.isSuccessful && s.isBlank()) null else s
@@ -301,7 +303,7 @@ object Api {
      * multipart（上传头像/封面/视频）：体积大，只走 OkHttp，
      * 但会先确保 Cookie 已就绪。
      */
-    private suspend fun postMultipart(url: String, body: okhttp3.RequestBody): String {
+    private suspend fun postMultipart(url: String, body: RequestBody): String {
         ensureWarm()
         return rawPost(url, body) ?: ""
     }
@@ -319,7 +321,7 @@ object Api {
         return JSONObject(s)
     }
 
-    private fun form(kv: Map<String, String>): okhttp3.RequestBody =
+    private fun form(kv: Map<String, String>): RequestBody =
         FormBody.Builder().apply { kv.forEach { (k, v) -> add(k, v) } }.build()
 
     fun formOf(vararg kv: Pair<String, String>): Map<String, String> = linkedMapOf(*kv)
