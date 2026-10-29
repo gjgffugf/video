@@ -7,16 +7,7 @@ import android.os.Looper
 import android.provider.OpenableColumns
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import okhttp3.MediaType
 import okhttp3.MediaType.Companion.toMediaType
-import okhttp3.MultipartBody
-import okhttp3.Request
-import okhttp3.RequestBody
-import okhttp3.RequestBody.Companion.toRequestBody
-import okio.Buffer
-import okio.BufferedSink
-import okio.ForwardingSink
-import okio.buffer
 import org.json.JSONObject
 import java.io.InputStream
 import java.security.MessageDigest
@@ -51,6 +42,14 @@ data class UploadResult(
 
 /** 视频上限 250MB */
 const val MAX_UPLOAD_BYTES = 250L * 1024 * 1024
+/**
+ * 单片大小 2MB。
+ *
+ * 虚拟主机 PHP 的 post_max_size / upload_max_filesize 通常只有 2~20MB，
+ * 整文件一次 POST 传大文件会被直接掐断（报 unexpected end of stream）。
+ * 分片上传每片都远小于该限制，是这类主机上唯一稳的做法。
+ */
+const val CHUNK_SIZE = 2 * 1024 * 1024
 /** 封面上限 10MB */
 const val MAX_COVER_BYTES = 10L * 1024 * 1024
 /** 头像上限 8MB */
@@ -58,28 +57,6 @@ const val MAX_AVATAR_BYTES = 8L * 1024 * 1024
 
 private val OCTET_STREAM = "application/octet-stream".toMediaType()
 
-/** 统计真实写入网络的字节数（进度条不是假的） */
-private class CountingRequestBody(
-    private val delegate: RequestBody,
-    private val onBytes: (Long, Long) -> Unit
-) : RequestBody() {
-    override fun contentType(): MediaType? = delegate.contentType()
-    override fun contentLength(): Long = delegate.contentLength()
-    override fun writeTo(sink: BufferedSink) {
-        val total = contentLength()
-        val counting = object : ForwardingSink(sink) {
-            var sent = 0L
-            override fun write(source: Buffer, byteCount: Long) {
-                super.write(source, byteCount)
-                sent += byteCount
-                onBytes(sent, total)
-            }
-        }
-        val b = counting.buffer()
-        delegate.writeTo(b)
-        b.flush()
-    }
-}
 
 object Uploader {
 
@@ -119,8 +96,14 @@ object Uploader {
     }
 
     /**
-     * 整文件上传（含封面/简介/标题），带真实进度与速度。
-     * onProgress 已在主线程回调。
+     * 分片上传（含封面/简介/标题），带真实进度与速度。
+     *
+     * 走 init -> chunk(多次) -> finish 三段式：
+     * 单片 2MB，绕开虚拟主机 PHP 的 post_max_size 限制，
+     * 避免整文件 POST 被掐断报 unexpected end of stream。
+     * 支持秒传（服务端已有同 sha1）与断点续传（跳过已收到的片）。
+     *
+     * onProgress 已在主线程回调，可直接更新 UI。
      */
     suspend fun upload(
         ctx: Context,
@@ -144,10 +127,9 @@ object Uploader {
                     error = "文件 %.1f MB 超过上限 %d MB".format(size / 1048576.0, MAX_UPLOAD_BYTES / 1048576))
             }
 
-            // 上传前先确保浏览器会话 Cookie 就绪，
-            // 否则文件会被主机的人机验证页拦下来（拿到的是 HTML 不是 JSON）。
-            // 这一步可能要开 WebView 跑验证，耗时几秒，
-            // 所以必须先 emit 一个状态，否则界面会"点了没反应"。
+            // 上传前先确保浏览器会话 Cookie 就绪。
+            // 这一步可能要开 WebView 跑验证，耗时几秒，必须先 emit 一个状态，
+            // 否则界面看起来像"点了没反应"。
             emit("warming", 0, size)
             Api.ensureSession()
 
@@ -155,98 +137,146 @@ object Uploader {
             val sha1 = sha1Of(ctx, uri)
             emit("preparing", 0, size)
 
-            val fileBody = object : RequestBody() {
-                override fun contentType(): MediaType = OCTET_STREAM
-                override fun contentLength(): Long = size
-                override fun writeTo(sink: BufferedSink) {
-                    ctx.contentResolver.openInputStream(uri)?.use { input ->
-                        sink.outputStream().use { out ->
-                            val buf = ByteArray(1 shl 16)
-                            while (true) { val n = input.read(buf); if (n <= 0) break; out.write(buf, 0, n) }
+            val ep = BuildConfig.API_BASE
+
+            // ---------- 1) init ----------
+            val initRaw = Api.postFormRaw(ep + "?action=upload_init", linkedMapOf(
+                "sha1" to sha1,
+                "size" to size.toString(),
+                "name" to title,
+                "title" to title,
+                "intro" to intro,
+                "chunk_size" to CHUNK_SIZE.toString()
+            ))
+            if (initRaw.isBlank() || Api.looksHtml(initRaw)) {
+                return@withContext UploadResult(false, error = "连接服务端失败（或被主机验证拦截）")
+            }
+            val initJson = JSONObject(initRaw)
+            if (!initJson.optBoolean("ok", false)) {
+                return@withContext UploadResult(false,
+                    error = "初始化失败：" + initJson.optString("error", "") +
+                        " " + initJson.optString("tip", ""))
+            }
+
+            // 秒传：服务端已有同 sha1 且文件还在
+            if (initJson.optBoolean("instant", false)) {
+                emit("done", size, size)
+                val it = JSONObject()
+                it.put("sha1", sha1)
+                it.put("title", title)
+                it.put("url", initJson.optString("url"))
+                return@withContext UploadResult(true,
+                    item = parseItem(it), duplicate = true)
+            }
+
+            val uploadId = initJson.optString("upload_id")
+            val total = initJson.optInt("total", 0)
+            if (uploadId.isBlank() || total <= 0) {
+                return@withContext UploadResult(false, error = "初始化返回异常")
+            }
+
+            // 断点续传：跳过已收到的分片
+            val received = HashSet<Int>()
+            val arr = initJson.optJSONArray("received")
+            if (arr != null) for (i in 0 until arr.length()) received.add(arr.optInt(i, -1))
+
+            var uploaded = 0L
+            for (i in received) uploaded += minOf(CHUNK_SIZE.toLong(), size - i * CHUNK_SIZE.toLong())
+            emit("uploading", uploaded, size)
+
+            // ---------- 2) 逐片上传 ----------
+            var lastSent = uploaded
+            var lastTs = System.currentTimeMillis()
+
+            ctx.contentResolver.openInputStream(uri)?.use { input ->
+                val buf = ByteArray(CHUNK_SIZE)
+                var idx = 0
+                while (idx < total) {
+                    var off = 0
+                    while (off < CHUNK_SIZE) {
+                        val n = input.read(buf, off, CHUNK_SIZE - off)
+                        if (n <= 0) break
+                        off += n
+                    }
+                    if (off <= 0) break
+
+                    // 服务端已有此片则跳过（断点续传）
+                    if (!received.contains(idx)) {
+                        val chunk = if (off == CHUNK_SIZE) buf else buf.copyOf(off)
+                        val r = Api.postBytes(
+                            ep + "?action=upload_chunk&upload_id=" +
+                                java.net.URLEncoder.encode(uploadId, "UTF-8") +
+                                "&index=" + idx,
+                            chunk, OCTET_STREAM
+                        )
+                        if (r.isBlank() || Api.looksHtml(r)) {
+                            return@withContext UploadResult(false,
+                                error = "第 $idx 片上传失败（连接被中断）")
+                        }
+                        val cj = JSONObject(r)
+                        if (!cj.optBoolean("ok", false)) {
+                            return@withContext UploadResult(false,
+                                error = "第 $idx 片失败：" + cj.optString("error", ""))
                         }
                     }
+
+                    uploaded += off
+                    val now = System.currentTimeMillis()
+                    val dt = now - lastTs
+                    val speed = if (dt >= 500) {
+                        val v = ((uploaded - lastSent) * 1000 / dt).coerceAtLeast(0)
+                        lastSent = uploaded; lastTs = now; v
+                    } else 0L
+                    emit("uploading", minOf(uploaded, size), size, speed)
+                    idx++
                 }
             }
 
-            // 速度 = 每 500ms 采样一次的增量
-            var lastSent = 0L
-            var lastTs = System.currentTimeMillis()
-            val counting = CountingRequestBody(fileBody) { sent, total ->
-                val now = System.currentTimeMillis()
-                val dt = now - lastTs
-                val speed = if (dt >= 500) {
-                    val v = ((sent - lastSent) * 1000 / dt).coerceAtLeast(0)
-                    lastSent = sent; lastTs = now; v
-                } else -1L
-                emit("uploading", sent, total, if (speed < 0) 0 else speed)
+            // ---------- 3) finish ----------
+            emit("finishing", size, size)
+            val finRaw = Api.postFormRaw(ep + "?action=upload_finish", linkedMapOf(
+                "upload_id" to uploadId, "sha1" to sha1
+            ))
+            if (finRaw.isBlank() || Api.looksHtml(finRaw)) {
+                return@withContext UploadResult(false, error = "合并分片失败（连接被中断）")
+            }
+            val finJson = JSONObject(finRaw)
+            if (!finJson.optBoolean("ok", false)) {
+                return@withContext UploadResult(false,
+                    error = "合并失败：" + finJson.optString("error", "") +
+                        " " + finJson.optString("tip", ""))
             }
 
-            val b = MultipartBody.Builder().setType(MultipartBody.FORM)
-                .addFormDataPart("session", Session.token)
-                .addFormDataPart("title", title)
-                .addFormDataPart("intro", intro)
-                .addFormDataPart("sha1", sha1)
-                .addFormDataPart("file", title, counting)
-
+            // 封面单独上传（分片流程不支持带封面）
             if (coverUri != null) {
                 val cs = sizeOf(ctx, coverUri)
                 if (cs > 0 && cs <= MAX_COVER_BYTES) {
-                    val bytes = Api.readBytes(ctx, coverUri)
-                    if (bytes != null) {
-                        val n = nameOf(ctx, coverUri)
-                        b.addFormDataPart("cover", n, bytes.toRequestBody(Api.guessImageType(n)))
-                    }
-                } else {
-                    return@withContext UploadResult(false, error = "封面超过 ${MAX_COVER_BYTES / 1048576} MB")
+                    Api.updateWork(sha1, null, coverUri, ctx)
                 }
-            }
-            val multipart = b.build()
-
-            val raw = Api.httpClient.newCall(
-                Request.Builder().url(BuildConfig.API_BASE + "?action=upload").post(multipart).build()
-            ).execute().use { r ->
-                val s = r.body?.string().orEmpty()
-                if (!r.isSuccessful) {
-                    return@withContext UploadResult(false,
-                        error = "HTTP ${r.code}（多半是 PHP 的 post_max_size / upload_max_filesize 太小）")
-                }
-                s
-            }
-
-            emit("finishing", size, size)
-            if (raw.isBlank()) return@withContext UploadResult(false, error = "服务端无响应")
-            if (Api.looksHtml(raw)) {
-                return@withContext UploadResult(false,
-                    error = "服务端返回网页不是 JSON（被主机人机验证拦截）")
-            }
-
-            val j = JSONObject(raw)
-            if (!j.optBoolean("ok", false)) {
-                val tip = j.optString("tip", "")
-                return@withContext UploadResult(false,
-                    error = j.optString("error", "上传失败") + if (tip.isNotBlank()) " · $tip" else "")
             }
 
             emit("done", size, size)
-            val item = j.optJSONObject("item")
-            val v = if (item != null) VideoItem(
-                sha1 = item.optString("sha1"),
-                title = item.optString("title"),
-                intro = item.optString("intro"),
-                url = item.optString("url"),
-                cover = item.optString("cover"),
-                size = item.optLong("size", 0L),
-                mime = item.optString("mime", "video/mp4"),
-                authorId = item.optString("author_id"),
-                authorName = item.optString("author_name"),
-                authorAvatar = item.optString("author_avatar"),
-                createdAt = item.optString("created_at"),
-                likes = item.optInt("likes", 0),
-                commentCount = item.optInt("comment_count", 0)
-            ) else null
-            UploadResult(true, item = v, duplicate = j.optBoolean("duplicate", false))
+            val itemObj = finJson.optJSONObject("item")
+            UploadResult(true, item = if (itemObj != null) parseItem(itemObj) else null)
         } catch (e: Exception) {
             UploadResult(false, error = e.message ?: e.javaClass.simpleName)
         }
     }
+
+    /** 把服务端返回的 item JSON 解析成 VideoItem */
+    private fun parseItem(j: JSONObject): VideoItem = VideoItem(
+        sha1 = j.optString("sha1"),
+        title = j.optString("title"),
+        intro = j.optString("intro"),
+        url = j.optString("url"),
+        cover = j.optString("cover"),
+        size = j.optLong("size", 0L),
+        mime = j.optString("mime", "video/mp4"),
+        authorId = j.optString("author_id"),
+        authorName = j.optString("author_name"),
+        authorAvatar = j.optString("author_avatar"),
+        createdAt = j.optString("created_at"),
+        likes = j.optInt("likes", 0),
+        commentCount = j.optInt("comment_count", 0)
+    )
 }

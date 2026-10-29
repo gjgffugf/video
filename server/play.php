@@ -43,7 +43,11 @@ function zlz_norm($s) { return strtolower(trim((string) $s)); }
 $videoPath = isset($_GET['video'])    ? trim(zlz_deep_decode($_GET['video']))       : '';
 $videoUrl  = isset($_GET['video-url']) ? trim(zlz_deep_decode($_GET['video-url']))  : '';
 $iframe    = isset($_GET['iframe'])   ? trim($_GET['iframe'])                       : '';
-$sha1Param = isset($_GET['sha1'])     ? strtolower(trim($_GET['sha1']))             : '';
+// sha1 可能被叠了 %xx，去掉所有非十六进制字符再取前 40 位
+$sha1Param = isset($_GET['sha1'])
+    ? substr(preg_replace('/[^a-fA-F0-9]/', '', zlz_deep_decode($_GET['sha1'])), 0, 40)
+    : '';
+$sha1Param = strtolower($sha1Param);
 
 $title = 'zilizili';
 $src   = '';
@@ -53,11 +57,11 @@ $uploader = '';
 $intro = '';
 $createdAt = '';
 
-// ---------- 模式 1：?video=用户名/视频名 ----------
-if ($videoPath !== '') {
+// ---------- 模式 1：?video=用户名/视频名（或仅 ?sha1=） ----------
+if ($videoPath !== '' || $sha1Param !== '') {
     $meta = zlz_read($CFG, 'videos.json', array());
 
-    // 优先用 sha1 精确定位（最可靠，不受编码影响）
+    // 优先用 sha1 精确定位：纯十六进制，链接被反复编码也不会变形
     if ($sha1Param !== '' && isset($meta[$sha1Param])) {
         $found = $meta[$sha1Param];
     } else {

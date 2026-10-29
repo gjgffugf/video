@@ -1,6 +1,5 @@
 package com.zilizili.app
 
-import android.app.Activity
 import android.content.Intent
 import android.net.Uri
 import android.os.Bundle
@@ -174,10 +173,10 @@ class UploadFragment : Fragment() {
                 tvSpeed.text = p.speedText()
                 tvStage.text = when (p.stage) {
                     "warming" -> "正在链接服务器…"
-                    "hashing" -> "计算指纹 ${fmt(p.uploadedBytes)} / ${fmt(p.totalBytes)}"
-                    "preparing" -> "准备上传…"
+                    "hashing" -> "计算指纹…"
+                    "preparing" -> "准备分片…"
                     "uploading" -> "上传中 ${fmt(p.uploadedBytes)} / ${fmt(p.totalBytes)}"
-                    "finishing" -> "服务端校验并入库…"
+                    "finishing" -> "服务端校验并合并…"
                     "done" -> "完成"
                     else -> p.stage
                 }

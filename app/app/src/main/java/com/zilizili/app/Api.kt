@@ -247,6 +247,25 @@ object Api {
         }
     } catch (e: Exception) { null }
 
+    /** ---- 对外暴露底层传输，供 Uploader 做分片上传 ---- */
+
+    suspend fun getRaw(url: String): String = withContext(Dispatchers.IO) {
+        runCatching { rawGet(url) }.getOrDefault("")
+    }
+
+    suspend fun postFormRaw(url: String, params: Map<String, String>): String =
+        withContext(Dispatchers.IO) {
+            runCatching { rawPost(url, form(params)) }.getOrDefault("")
+        }
+
+    /** 分片是裸字节 body，session 通过拦截器自动带 X-ZLZ-Session 头 */
+    suspend fun postBytes(url: String, bytes: ByteArray, type: MediaType): String =
+        withContext(Dispatchers.IO) {
+            runCatching {
+                rawPost(url, bytes.toRequestBody(type))
+            }.getOrDefault("")
+        }
+
     /**
      * 对外：上传等大请求前先确保浏览器会话 Cookie 就绪。
      * 已经预热过就直接返回，不会重复开 WebView。
@@ -629,18 +648,13 @@ object Api {
     /**
      * 分享链接：指向服务端的 play.php
      *
-     * 用户名和视频名分别编码，中间用 %2F 连接（ '/' 的转义形式）。
-     * 末尾带 &sha1= 兜底：链接被浏览器/微信二次编码后名字可能匹配不上，
-     * sha1 不受编码影响，play.php 会优先用它定位。
+     * 只用 ?sha1= 定位，不放用户名/视频名/外链。
+     * 原因：链接被浏览器、微信、备忘录转发时会被反复 URL 编码，
+     * %2F 会变成 %252F，名字类参数必然匹配失败。
+     * 而 sha1 是纯十六进制，无论怎么编码都不会变形。
      */
     fun shareLink(item: VideoItem): String {
         val base = BuildConfig.API_BASE.substringBeforeLast('/')
-        val sha1 = "&sha1=" + Uri.encode(item.sha1)
-        return if (item.authorName.isNotBlank()) {
-            "$base/play.php?video=" + Uri.encode(item.authorName) +
-                "%2F" + Uri.encode(item.title) + sha1
-        } else {
-            "$base/play.php?video-url=" + Uri.encode(item.url) + sha1
-        }
+        return "$base/play.php?sha1=" + item.sha1
     }
 }
