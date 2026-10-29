@@ -100,8 +100,9 @@ object WebSession {
                             cm.flush()
                             if (cont.isActive) cont.resume(raw)
                             safeDestroy(wv)
-                        } else if (n++ < 6) {
-                            handler.postDelayed(this, 1000)
+                        } else if (n++ < 4) {
+                            // 别等太久：验证页一般 1~2 秒内就落地 Cookie
+                            handler.postDelayed(this, 700)
                         } else {
                             if (cont.isActive) cont.resume("")
                             safeDestroy(wv)
@@ -112,7 +113,7 @@ object WebSession {
                 wv.webViewClient = object : WebViewClient() {
                     override fun onPageFinished(view: WebView, url: String) {
                         handler.removeCallbacks(poll)
-                        handler.postDelayed(poll, 800)
+                        handler.postDelayed(poll, 400)
                     }
                 }
                 wv.loadUrl(origin + "/")

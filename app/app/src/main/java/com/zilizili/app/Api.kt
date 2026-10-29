@@ -247,8 +247,14 @@ object Api {
         }
     } catch (e: Exception) { null }
 
-    /** 对外：上传等大请求前先确保浏览器会话 Cookie 就绪 */
-    suspend fun ensureSession() { runCatching { ensureWarm() } }
+    /**
+     * 对外：上传等大请求前先确保浏览器会话 Cookie 就绪。
+     * 已经预热过就直接返回，不会重复开 WebView。
+     */
+    suspend fun ensureSession() {
+        if (WebSession.warmed) return
+        runCatching { ensureWarm() }
+    }
 
     /** 响应是否是 HTML（验证页）而非 JSON */
     fun looksHtml(s: String): Boolean = blocked(s)
@@ -620,13 +626,21 @@ object Api {
         return t.toMediaType()
     }
 
-    /** 分享链接：指向服务端的 play.php */
+    /**
+     * 分享链接：指向服务端的 play.php
+     *
+     * 用户名和视频名分别编码，中间用 %2F 连接（ '/' 的转义形式）。
+     * 末尾带 &sha1= 兜底：链接被浏览器/微信二次编码后名字可能匹配不上，
+     * sha1 不受编码影响，play.php 会优先用它定位。
+     */
     fun shareLink(item: VideoItem): String {
         val base = BuildConfig.API_BASE.substringBeforeLast('/')
+        val sha1 = "&sha1=" + Uri.encode(item.sha1)
         return if (item.authorName.isNotBlank()) {
-            "$base/play.php?video=" + Uri.encode(item.authorName) + "%2F" + Uri.encode(item.title)
+            "$base/play.php?video=" + Uri.encode(item.authorName) +
+                "%2F" + Uri.encode(item.title) + sha1
         } else {
-            "$base/play.php?video-url=" + Uri.encode(item.url)
+            "$base/play.php?video-url=" + Uri.encode(item.url) + sha1
         }
     }
 }

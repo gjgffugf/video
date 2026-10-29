@@ -160,6 +160,9 @@ class UploadFragment : Fragment() {
         tvResult.text = ""
         progressBar.progress = 0
         tvPercent.text = "0%"
+        // 立刻给反馈，避免看起来"点了没反应"
+        tvStage.text = "正在链接服务器…"
+        tvSpeed.text = ""
 
         val title = etTitle.text.toString().trim().ifBlank { Uploader.nameOf(requireContext(), uri) }
         val intro = etIntro.text.toString().trim()
@@ -170,7 +173,8 @@ class UploadFragment : Fragment() {
                 tvPercent.text = "${p.percent}%"
                 tvSpeed.text = p.speedText()
                 tvStage.text = when (p.stage) {
-                    "hashing" -> "计算指纹…"
+                    "warming" -> "正在链接服务器…"
+                    "hashing" -> "计算指纹 ${fmt(p.uploadedBytes)} / ${fmt(p.totalBytes)}"
                     "preparing" -> "准备上传…"
                     "uploading" -> "上传中 ${fmt(p.uploadedBytes)} / ${fmt(p.totalBytes)}"
                     "finishing" -> "服务端校验并入库…"

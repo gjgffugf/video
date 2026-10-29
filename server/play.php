@@ -19,10 +19,31 @@ require_once $ROOT . '/api_config.php';
 
 function h($s) { return htmlspecialchars((string) $s, ENT_QUOTES, 'UTF-8'); }
 
+/**
+ * 多重解码。
+ *
+ * 分享出去的链接常被浏览器/微信/备忘录再编码一次，
+ * 于是 %2F 变成 %252F、%3A 变成 %253A，PHP 自动解一层之后仍是 %xx，
+ * 直接用会匹配不到视频。这里循环解到没有 %2F/%3A/%2F 为止。
+ */
+function zlz_deep_decode($s) {
+    for ($i = 0; $i < 3; $i++) {
+        if (stripos($s, '%2F') === false && stripos($s, '%3A') === false) break;
+        $d = rawurldecode($s);
+        if ($d === $s) break;
+        $s = $d;
+    }
+    return $s;
+}
+
+/** 规范化：去掉首尾空白与多余斜杠，用于宽松匹配 */
+function zlz_norm($s) { return strtolower(trim((string) $s)); }
+
 // ---------- 读取参数 ----------
-$videoPath = isset($_GET['video']) ? trim($_GET['video']) : '';
-$videoUrl  = isset($_GET['video-url']) ? trim($_GET['video-url']) : '';
-$iframe    = isset($_GET['iframe']) ? trim($_GET['iframe']) : '';
+$videoPath = isset($_GET['video'])    ? trim(zlz_deep_decode($_GET['video']))       : '';
+$videoUrl  = isset($_GET['video-url']) ? trim(zlz_deep_decode($_GET['video-url']))  : '';
+$iframe    = isset($_GET['iframe'])   ? trim($_GET['iframe'])                       : '';
+$sha1Param = isset($_GET['sha1'])     ? strtolower(trim($_GET['sha1']))             : '';
 
 $title = 'zilizili';
 $src   = '';
@@ -35,28 +56,42 @@ $createdAt = '';
 // ---------- 模式 1：?video=用户名/视频名 ----------
 if ($videoPath !== '') {
     $meta = zlz_read($CFG, 'videos.json', array());
-    $parts = explode('/', $videoPath, 2);
-    $uname = isset($parts[0]) ? trim($parts[0]) : '';
-    $vname = isset($parts[1]) ? trim($parts[1]) : '';
 
-    $uid = zlz_find_by_name($CFG, $uname);
-    $found = null; $sha1Found = '';
-    if ($uid !== '') {
-        foreach ($meta as $sha1 => $v) {
-            if (!isset($v['author_id']) || $v['author_id'] !== $uid) continue;
-            if ($vname !== '' && isset($v['title']) && $v['title'] !== $vname) continue;
-            $found = $v; $sha1Found = $sha1; break;
+    // 优先用 sha1 精确定位（最可靠，不受编码影响）
+    if ($sha1Param !== '' && isset($meta[$sha1Param])) {
+        $found = $meta[$sha1Param];
+    } else {
+        $found = null;
+        // 分隔符既可能是解码后的 '/'，也可能是没解干净的 %2F
+        $sep = (strpos($videoPath, '/') !== false) ? '/' : '%2F';
+        $parts = explode($sep, $videoPath, 2);
+        $uname = isset($parts[0]) ? trim($parts[0]) : '';
+        $vname = isset($parts[1]) ? trim($parts[1]) : '';
+        if ($vname === '') { $vname = $uname; $uname = ''; }
+
+        $uid = ($uname !== '') ? zlz_find_by_name($CFG, $uname) : '';
+
+        // 1) 作者 + 标题
+        if ($uid !== '') {
+            foreach ($meta as $sha1 => $v) {
+                if (!isset($v['author_id']) || $v['author_id'] !== $uid) continue;
+                if ($vname !== '' && zlz_norm($v['title']) !== zlz_norm($vname)) continue;
+                $found = $v; break;
+            }
         }
-    }
-    // 退化为：只用视频名匹配
-    if (!$found && $vname !== '') {
-        foreach ($meta as $sha1 => $v) {
-            if (isset($v['title']) && $v['title'] === $vname) { $found = $v; $sha1Found = $sha1; break; }
+        // 2) 只看标题
+        if (!$found && $vname !== '') {
+            foreach ($meta as $sha1 => $v) {
+                if (isset($v['title']) && zlz_norm($v['title']) === zlz_norm($vname)) { $found = $v; break; }
+            }
         }
-    }
-    if (!$found && $uname !== '') {
-        foreach ($meta as $sha1 => $v) {
-            if (isset($v['title']) && $v['title'] === $uname) { $found = $v; $sha1Found = $sha1; break; }
+        // 3) 标题去掉扩展名再比一次（有些分享会带上 .mp4）
+        if (!$found && $vname !== '') {
+            $base = preg_replace('/\.[a-z0-9]+$/i', '', zlz_norm($vname));
+            foreach ($meta as $sha1 => $v) {
+                $t = isset($v['title']) ? preg_replace('/\.[a-z0-9]+$/i', '', zlz_norm($v['title'])) : '';
+                if ($t !== '' && $t === $base) { $found = $v; break; }
+            }
         }
     }
 
@@ -92,12 +127,22 @@ elseif ($videoUrl !== '') {
     $type = strtolower(pathinfo($p !== null ? $p : $src, PATHINFO_EXTENSION));
     if ($type === '') $type = 'mp4';
 
-    // 可选：由服务端代理转发，解决跨域/Referer 限制
+    // 默认由服务端代理转发：外链常有 Referer 防盗链 / 跨域限制，
+    // 浏览器直连会被源站拒绝。加 ?proxy=0 可关掉，改回直连。
+    $useProxy = !isset($_GET['proxy']) || $_GET['proxy'] !== '0';
+    if ($useProxy) {
+        // 视频地址指向本页自己（带 proxy=1），流式转发
+        $src = zlz_base($CFG) . '/play.php?video-url=' . rawurlencode($src) . '&proxy=1';
+    }
+
+    // proxy=1：真正执行转发的那一趟请求
     if (isset($_GET['proxy']) && $_GET['proxy'] === '1') {
         header('Content-Type: ' . ($type === 'm3u8' ? 'application/vnd.apple.mpegurl' : zlz_mime($type)));
         header('Access-Control-Allow-Origin: *');
+        header('Accept-Ranges: bytes');
+        $origin = zlz_deep_decode($videoUrl);
         if (function_exists('curl_init')) {
-            $ch = curl_init($src);
+            $ch = curl_init($origin);
             curl_setopt_array($ch, array(
                 CURLOPT_RETURNTRANSFER => false,
                 CURLOPT_FOLLOWLOCATION => true,
@@ -106,7 +151,7 @@ elseif ($videoUrl !== '') {
                 CURLOPT_SSL_VERIFYPEER => false,
                 CURLOPT_SSL_VERIFYHOST => false,
                 CURLOPT_USERAGENT => $CFG['browser_ua'],
-                CURLOPT_HTTPHEADER => array('Referer: ' . zlz_origin($src) . '/'),
+                CURLOPT_HTTPHEADER => array('Referer: ' . zlz_origin($origin) . '/'),
                 CURLOPT_HEADERFUNCTION => function ($ch, $line) {
                     $l = strtolower($line);
                     // 透传 Content-Type / Content-Length，其余头丢弃
@@ -121,7 +166,7 @@ elseif ($videoUrl !== '') {
             exit;
         }
         // cURL 不可用时的降级
-        $d = @file_get_contents($src);
+        $d = @file_get_contents($origin);
         if ($d !== false) echo $d;
         exit;
     }

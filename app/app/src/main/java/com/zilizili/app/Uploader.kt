@@ -145,7 +145,10 @@ object Uploader {
             }
 
             // 上传前先确保浏览器会话 Cookie 就绪，
-            // 否则大文件会被主机的人机验证页拦下来（拿到的是 HTML 不是 JSON）
+            // 否则文件会被主机的人机验证页拦下来（拿到的是 HTML 不是 JSON）。
+            // 这一步可能要开 WebView 跑验证，耗时几秒，
+            // 所以必须先 emit 一个状态，否则界面会"点了没反应"。
+            emit("warming", 0, size)
             Api.ensureSession()
 
             emit("hashing", 0, size)
