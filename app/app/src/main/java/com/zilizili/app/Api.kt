@@ -249,21 +249,21 @@ object Api {
 
     /** ---- 对外暴露底层传输，供 Uploader 做分片上传 ---- */
 
+    // 注意：rawGet / rawPost 返回的是 String?（失败时为 null），
+    // 这里统一用 orEmpty() 转成非空 String，避免可空类型不匹配。
     suspend fun getRaw(url: String): String = withContext(Dispatchers.IO) {
-        runCatching { rawGet(url) }.getOrDefault("")
+        runCatching { rawGet(url) }.getOrNull() ?: ""
     }
 
     suspend fun postFormRaw(url: String, params: Map<String, String>): String =
         withContext(Dispatchers.IO) {
-            runCatching { rawPost(url, form(params)) }.getOrDefault("")
+            runCatching { rawPost(url, form(params)) }.getOrNull() ?: ""
         }
 
     /** 分片是裸字节 body，session 通过拦截器自动带 X-ZLZ-Session 头 */
     suspend fun postBytes(url: String, bytes: ByteArray, type: MediaType): String =
         withContext(Dispatchers.IO) {
-            runCatching {
-                rawPost(url, bytes.toRequestBody(type))
-            }.getOrDefault("")
+            runCatching { rawPost(url, bytes.toRequestBody(type)) }.getOrNull() ?: ""
         }
 
     /**
